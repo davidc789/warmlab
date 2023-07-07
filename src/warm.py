@@ -1,4 +1,3 @@
-#%% Imports
 from collections.abc import Sequence
 from typing import TypedDict, Optional, Callable
 
