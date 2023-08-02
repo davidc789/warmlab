@@ -1,8 +1,9 @@
-cvxpy[CVXOPT,GUROBI]
 jupyterlab
 scipy
 igraph
 pandas
 numpy
-plotly
 colour
+requests
+aiohttp
+matplotlib
