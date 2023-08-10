@@ -28,80 +28,36 @@ class Action(TypedDict):
 
 Actions = list[Action]
 
+def fast_choose(q: float, arr: list[float], p: list[float]):
+    cp = np.cumsum(p)
 
-class WarmResults(object):
-    _problem: cp.Problem
-    _vardict: dict[str, cp.Variable]
-    _x: list[int]
+    for i, x in enumerate(cp):
+        if x >= q:
+            return arr[i]
 
-    def __init__(self, problem: cp.Problem):
-        self._problem = problem
-        self._vardict = problem.var_dict
-        self._x = problem.var_dict["x"].value
-
-    @property
-    def x(self):
-        return self._x
-
-    @property
-    def problem(self):
-        return self._problem
+    raise ValueError(f"q={q} is out of [0, 1]")
 
 
-class JsonSerialisable(object, metaclass=abc.ABCMeta):
-    """ A base class for implementing Json Serialisation. """
-    __slots__ = ()
-
-    @abc.abstractmethod
-    def to_dict(self):
-        """ A no-copy dictionary conversion.
-
-        :return: The dictionary representation of the object.
-        """
-        pass
-
-    @classmethod
-    @abc.abstractmethod
-    def from_dict(cls, dct: dict):
-        """ Constructs the object from a given dictionary form.
-
-        :param dct: The dictionary format.
-        """
-        pass
-
-    def to_json(self):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict())
-
-    @classmethod
-    def from_json(cls, string: str):
-        """ Constructs the object from a json serialisation.
-
-        :param string: The json serialised format.
-        """
-        return json.loads(string, object_hook=cls.from_dict)
+# class WarmGraphResults(WarmResults):
+#     _graph: ig.Graph
+#
+#     def __init__(self, problem: cp.Problem, graph: ig.Graph):
+#         super().__init__(problem)
+#         self._graph = graph
+#
+#     def draw(self):
+#         fig, ax = plt.subplots()
+#         ig.plot(
+#             self._graph,
+#             vertex_size=20,
+#             vertex_label=['first', 'second', 'third', 'fourth'],
+#             edge_width=[1, 4],
+#             edge_color=['black', 'grey'],
+#             target=ax
+#         )
 
 
-class WarmGraphResults(WarmResults):
-    _graph: ig.Graph
-
-    def __init__(self, problem: cp.Problem, graph: ig.Graph):
-        super().__init__(problem)
-        self._graph = graph
-
-    def draw(self):
-        fig, ax = plt.subplots()
-        ig.plot(
-            self._graph,
-            vertex_size=20,
-            vertex_label=['first', 'second', 'third', 'fourth'],
-            edge_width=[1, 4],
-            edge_color=['black', 'grey'],
-            target=ax
-        )
-
-
-class WarmModel(JsonSerialisable):
+class WarmModel(object):
     """ A generic WARM model specification. """
     bins: list[list[int]]                    # The grouping of elements.
     probs: list[float]                       # Probability of bins.
@@ -154,6 +110,7 @@ class WarmModel(JsonSerialisable):
             self.probs = standardise(probs)
 
         # Post-init computations
+        self.is_graph = is_graph
         self.bins_count = len(self.bins)
         self._inc_matrix = None
         self.rev_bin_map = calc_rev_bin_map(self.bins, self.elem_count)
@@ -174,10 +131,14 @@ class WarmModel(JsonSerialisable):
 
     def to_dict(self):
         """ A no-copy dictionary conversion. """
+        if self.is_graph:
+            graph_dict = self.graph.to_dict_dict()
+        else:
+            graph_dict = None
         return {
             "probs": self.probs,
             "is_graph": self.is_graph,
-            "graph": self.graph.to_dict_dict,
+            "graph": graph_dict,
             "bins": self.bins,
             "elem_count": self.elem_count
         }
@@ -192,7 +153,7 @@ class WarmModel(JsonSerialisable):
         graph: Optional[ig.Graph] = None
 
         if is_graph:
-            graph = ig.Graph(dct["graph"])
+            graph = ig.Graph.DictDict(dct["graph"])
 
         return cls(
             probs=dct["probs"],
@@ -202,20 +163,35 @@ class WarmModel(JsonSerialisable):
             elem_count=dct["elem_count"]
         )
 
+    def to_json(self, *args, **kargs):
+        """ Converts the class to a json string. """
+        return json.dumps(self.to_dict(), *args, **kargs)
+
+    @classmethod
+    def from_json(cls, string: str, *args, **kargs):
+        """ Constructs the object from a json serialisation.
+
+        :param string: The json serialised format.
+        """
+        return cls.from_dict(json.loads(string, *args, **kargs))
+
 
 @dataclass(slots=True)
-class WarmSimulationData(JsonSerialisable):
-    model: WarmModel     # The model.
-    root: str            # The starting point of the simulation.
-    n: int               # Target time.
-    t: int               # Current time.
-    counts: list[int]    # Current counts.
-    x: list[float] = field(init=False)      # Current proportions.
-    omegas: list[int] = field(init=False)   # Current omegas.
+class WarmSimulationData(object):
+    model: WarmModel        # The model.
+    root: str               # The starting point of the simulation.
+    targetTime: int         # Target time.
+    t: int                  # Current time.
+    trialId: Optional[int] = None          # The trialId. Used only for tagging.
+    counts: Optional[list[int]] = None     # Current counts.
+    x: list[float] = field(init=False)     # Current proportions.
+    omegas: list[int] = field(init=False)  # Current node sums.
 
     def __post_init__(self):
-        self.x = standardise(self.counts)
-        self.omegas = calc_omega(self.model.bins, self.counts)
+        if self.counts is None:
+            self.counts = [1 for _ in range(self.model.elem_count)]
+        self.x = [x / (self.t + self.model.elem_count) for x in self.counts]
+        self.omegas = [sum(self.counts[i] for i in g) for g in self.model.bins]
 
     @classmethod
     def from_dict(cls, dct: dict):
@@ -226,8 +202,9 @@ class WarmSimulationData(JsonSerialisable):
         return cls(
             model=WarmModel.from_dict(dct["model"]),
             root=dct["root"],
-            n=dct["n"],
+            targetTime=dct["n"],
             t=dct["t"],
+            trialId=dct["trialId"],
             counts=dct["count"]
         )
 
@@ -239,10 +216,23 @@ class WarmSimulationData(JsonSerialisable):
         return {
             "model": self.model.to_dict(),
             "root": self.root,
-            "n": self.n,
+            "n": self.targetTime,
             "t": self.t,
+            "trialId": self.trialId,
             "count": self.counts
         }
+
+    def to_json(self, *args, **kargs):
+        """ Converts the class to a json string. """
+        return json.dumps(self.to_dict(), *args, **kargs)
+
+    @classmethod
+    def from_json(cls, string: str, *args, **kargs):
+        """ Constructs the object from a json serialisation.
+
+        :param string: The json serialised format.
+        """
+        return cls.from_dict(json.loads(string, *args, **kargs))
 
 
 def simulate(sim: WarmSimulationData):
@@ -253,22 +243,22 @@ def simulate(sim: WarmSimulationData):
     """
     # The reversed map tells us which bins need to reevaluate when e is updated.
     rev_bin_map = sim.model.rev_bin_map
-    data: list[BinDict] = [{
-        "group": g,
-        "omega": omega
-    } for [g, omega] in zip(sim.model.bins, sim.omegas)]
+    vertices = np.array(range(sim.model.bins_count))
+    vs = np.random.choice(vertices, size=sim.targetTime - sim.t, p=sim.model.probs)
+    qs = np.random.rand(sim.targetTime - sim.t)
 
-    while sim.t <= sim.n:
-        bin_data: BinDict = np.random.choice(data, p=sim.model.probs)
-        groups = bin_data["group"]
-        weights = [sim.counts[i] / bin_data["omega"] for i in groups]
+    offset = sim.t
+
+    while sim.t < sim.targetTime:
+        v = vs[sim.t - offset]
+        groups, omega = sim.model.bins[v], sim.omegas[v]
+        weights = [sim.counts[i] / omega for i in groups]
 
         # Selects a random edge and updates omegas based on
-        e = np.random.choice(groups, weights)
+        e = fast_choose(qs[sim.t - offset], groups, p=weights)
         sim.counts[e] += 1
-        omega_updates = calc_omega(rev_bin_map[e], sim.counts)
-        for (i, omega) in zip(rev_bin_map[e], omega_updates):
-            sim.omegas[i] = omega
+        for i in rev_bin_map[e]:
+            sim.omegas[i] += 1
         sim.t += 1
 
     return sim
@@ -337,67 +327,19 @@ def standardise(vec: list[float]):
     return [x / sum(vec) for x in vec]
 
 
+def ring_2d_graph(m: int):
+    """ Constructs a 2D ring graph of index m. """
+    outer_edges = [(i, (i + 1) % m) for i in range(m)]
+    edges = (outer_edges + [(i + m, j + m) for i, j in outer_edges]
+             + [(i, i + m) for i in range(m)])
+    graph = ig.Graph(n=2 * m, edges=edges)
+    return graph
+
+
 if __name__ == '__main__':
-    pass
-
-    # graph = ig.Graph(n=8, edges=[[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
-    #                           [6, 7], [7, 4], [3, 4]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-
-    # graph = ig.Graph(n=3, edges=[[0, 1], [0, 2]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-    #
-    # graph = ig.Graph(n=4, edges=[[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-    #
-    # graph = ig.Graph(n=6, edges=[[0, 1], [1, 2], [2, 3], [2, 4], [2, 5]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-    #
-    # graph = ig.Graph(n=6, edges=[[0, 1], [1, 2], [2, 3], [2, 4], [2, 5]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-    #
-    # graph = ig.Graph(n=8, edges=[[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
-    #                           [6, 7], [7, 4], [3, 4]])
-    # model = WarmGraph(graph)
-    # solution, values = model.solve()
-    # print(solution, values)
-
-    # x = cp.Variable(5, name="x")
-    # A = np.matrix([
-    #     [1, 1, 1, 1, 0],
-    #     [1, 0, 0, 0, 0],
-    #     [0, 1, 0, 0, 1],
-    #     [0, 0, 0, 0, 1],
-    #     [0, 0, 1, 0, 0],
-    #     [0, 0, 0, 1, 0]
-    # ])
-    # b = np.repeat(1/6, 6)
-    # omega = A @ x
-    #
-    # # Construct the problem.
-    # objective = (cp.sum(x)
-    #     - cp.sum(cp.multiply(cp.log(omega), np.array(b))))
-    # constraints = [cp.sum(x) == 1, omega >= b, x >= 0]
-    # prb = cp.Problem(cp.Minimize(objective), constraints)
-    #
-    # # The optimal objective value is returned by `prob.solve()`.
-    # result = prb.solve()
-    # # The optimal value for x is stored in `x.value`.
-    # values = [y.value for y in x]
-    # print(values)
-    # # The optimal Lagrange multiplier for a constraint is stored in
-    # # `constraint.dual_value`.
-    # print(constraints[0].dual_value)
-    # print(constraints[1].dual_value)
-    # print(constraints[2].dual_value)
-
+    m = 3
+    graph = ring_2d_graph(m)
+    model = WarmModel(is_graph=True, graph=graph)
+    sim = simulate(WarmSimulationData(model=model, root="0.0", t=0,
+                                      targetTime=1_000_000))
+    print(sim.to_json(indent=True))

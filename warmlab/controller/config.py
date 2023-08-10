@@ -7,6 +7,6 @@ class Config():
     DB_LOCATION = "../../data.sqlite"
 
     # Frequency of database entry.
-    TIME_STEP = 10_000_000
+    TIME_STEP = 1_000_000
 
 config = Config()

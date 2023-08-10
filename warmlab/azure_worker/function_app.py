@@ -13,7 +13,7 @@ def simulate_function(req: func.HttpRequest) -> func.HttpResponse:
     """ Runs simulation before returning the results back. """
     try:
         sim = req.get_json()
-        sim_data = warm.WarmSimulationData.from_json(sim)
+        sim_data = warm.WarmSimulationData.from_dict(sim)
         res_data = warm.simulate(sim_data)
         return func.HttpResponse(res_data.to_json())
     except ValueError as error:
