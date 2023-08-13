@@ -1,15 +1,14 @@
 """ Implements the WARM model. """
-import abc
+
 import logging
 
 
 from collections.abc import Sequence
-from typing import TypedDict, Optional, Callable, NamedTuple
+from typing import TypedDict, Optional, Callable
 from dataclasses import dataclass, field
 import json
 
 import numpy as np
-from matplotlib import pyplot as plt
 from scipy.integrate import solve_ivp
 import igraph as ig
 import cvxpy as cp
@@ -28,7 +27,7 @@ class Action(TypedDict):
 
 Actions = list[Action]
 
-def fast_choose(q: float, arr: list[float], p: list[float]):
+def fast_choose(q: float, arr: list[int], p: list[float]):
     cp = np.cumsum(p)
 
     for i, x in enumerate(cp):
@@ -60,7 +59,7 @@ def fast_choose(q: float, arr: list[float], p: list[float]):
 class WarmModel(object):
     """ A generic WARM model specification. """
     bins: list[list[int]]                    # The grouping of elements.
-    probs: list[float]                       # Probability of bins.
+    probs: np.ndarray                        # Probability of bins.
     bins_count: int                          # Number of bins.
     elem_count: int                          # Number of elements.
     is_graph: bool                           # Whether the model is graph-based.
@@ -105,9 +104,10 @@ class WarmModel(object):
             self.elem_count = elem_count
 
         if probs is None:
-            self.probs = [1 / len(self.bins) for _ in range(len(self.bins))]
+            probs = np.ones(len(self.bins))
         else:
-            self.probs = standardise(probs)
+            probs = np.array(probs)
+        self.probs = probs / np.sum(probs)
 
         # Post-init computations
         self.is_graph = is_graph
@@ -136,7 +136,7 @@ class WarmModel(object):
         else:
             graph_dict = None
         return {
-            "probs": self.probs,
+            "probs": self.probs.tolist(),
             "is_graph": self.is_graph,
             "graph": graph_dict,
             "bins": self.bins,
@@ -222,10 +222,6 @@ class WarmSimulationData(object):
             "count": self.counts
         }
 
-    def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict(), *args, **kargs)
-
     @classmethod
     def from_json(cls, string: str, *args, **kargs):
         """ Constructs the object from a json serialisation.
@@ -233,6 +229,10 @@ class WarmSimulationData(object):
         :param string: The json serialised format.
         """
         return cls.from_dict(json.loads(string, *args, **kargs))
+
+    def to_json(self, *args, **kargs):
+        """ Converts the class to a json string. """
+        return json.dumps(self.to_dict(), *args, **kargs)
 
 
 def simulate(sim: WarmSimulationData):
@@ -244,23 +244,20 @@ def simulate(sim: WarmSimulationData):
     # The reversed map tells us which bins need to reevaluate when e is updated.
     rev_bin_map = sim.model.rev_bin_map
     vertices = np.array(range(sim.model.bins_count))
-    vs = np.random.choice(vertices, size=sim.targetTime - sim.t, p=sim.model.probs)
+    vs: np.ndarray = np.random.choice(vertices, size=sim.targetTime - sim.t, p=sim.model.probs)
     qs = np.random.rand(sim.targetTime - sim.t)
 
-    offset = sim.t
-
-    while sim.t < sim.targetTime:
-        v = vs[sim.t - offset]
+    for v, q in zip(vs, qs):
         groups, omega = sim.model.bins[v], sim.omegas[v]
         weights = [sim.counts[i] / omega for i in groups]
 
         # Selects a random edge and updates omegas based on
-        e = fast_choose(qs[sim.t - offset], groups, p=weights)
+        e = fast_choose(q, groups, p=weights)
         sim.counts[e] += 1
         for i in rev_bin_map[e]:
             sim.omegas[i] += 1
-        sim.t += 1
 
+    sim.t = sim.targetTime
     return sim
 
 
@@ -271,7 +268,7 @@ def solve(model: WarmModel):
     """
     x = cp.Variable(model.elem_count, name="x")
     A = model.incidence_matrix
-    b = np.array(model.probs)
+    b = model.probs
     omega = A @ x
 
     # Construct the problem.
@@ -315,24 +312,48 @@ def analyze(model: WarmModel, x0: Sequence[int]):
     return solve_ivp(fun=f, t_span=[0, 1e-3], y0=x0, max_step=1e-8)
 
 
-def calc_omega(bins: Sequence[Sequence[int]], counts: Sequence[int]) -> list[int]:
-    return [sum(counts[i] for i in g) for g in bins]
-
-
 def calc_rev_bin_map(bins: Sequence[Sequence[int]], e_count: int) -> list[list[int]]:
     return [[i for i, g in enumerate(bins) if e in g] for e in range(e_count)]
 
 
-def standardise(vec: list[float]):
-    return [x / sum(vec) for x in vec]
-
-
 def ring_2d_graph(m: int):
-    """ Constructs a 2D ring graph of index m. """
+    """ Constructs a 2D ring graph of index m.
+
+    :param m: Index of the graph.
+    :return: The constructed graph.
+    """
     outer_edges = [(i, (i + 1) % m) for i in range(m)]
     edges = (outer_edges + [(i + m, j + m) for i, j in outer_edges]
              + [(i, i + m) for i in range(m)])
     graph = ig.Graph(n=2 * m, edges=edges)
+    return graph
+
+
+def grid(m: int):
+    """ Creates a 2D grid graph.
+
+    :param m: Index of the graph.
+    :return: The constructed graph.
+    """
+    # Horizontal + Vertical
+    edges = ([(m * j + i, m * j + i + 1) for i in range(m - 1) for j in range(m)]
+           + [(m * j + i, m * j + i + m) for i in range(m) for j in range(m - 1)])
+    graph = ig.Graph(n = m * m, edges=edges)
+    return graph
+
+
+def donut_2d_graph(m: int):
+    """ Creates a 2D donut graph.
+
+    :param m: Index of the graph.
+    :return: The constructed graph.
+    """
+    # Horizontal + Vertical
+    horizontals = [(i, (i + 1) % m) for i in range(m)]
+    verticals = [(i * m, j * m) for (i, j) in horizontals]
+    edges = ([(m * k + i, m * k + j) for (i, j) in horizontals for k in range(m)]
+           + [(i + k, j + k) for (i, j) in verticals for k in range(m)])
+    graph = ig.Graph(n=m * m, edges=edges)
     return graph
 
 

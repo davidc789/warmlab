@@ -1,6 +1,6 @@
 import warm
 import cvxpy as cp
-
+import sqlite3
 
 class WarmResults(object):
     _problem: cp.Problem
@@ -19,3 +19,7 @@ class WarmResults(object):
     @property
     def problem(self):
         return self._problem
+
+
+def warm_analyse():
+    pass

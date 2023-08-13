@@ -1,11 +1,8 @@
-jupyterlab
 scipy
 igraph
 pandas
 numpy
-colour
 requests
-tqdm
-aiosqlite
 aiohttp
+aiosqlite
 matplotlib

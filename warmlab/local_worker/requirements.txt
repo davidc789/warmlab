@@ -1,1 +1,8 @@
--r ../../requirements.txt
+scipy
+igraph
+pandas
+numpy
+requests
+flask
+waitress
+cvxpy

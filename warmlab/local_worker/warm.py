@@ -1,15 +1,14 @@
 """ Implements the WARM model. """
-import abc
+
 import logging
 
 
 from collections.abc import Sequence
-from typing import TypedDict, Optional, Callable, NamedTuple
+from typing import TypedDict, Optional, Callable
 from dataclasses import dataclass, field
 import json
 
 import numpy as np
-from matplotlib import pyplot as plt
 from scipy.integrate import solve_ivp
 import igraph as ig
 import cvxpy as cp
