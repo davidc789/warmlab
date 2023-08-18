@@ -1,11 +1,2 @@
-jupyterlab
-scipy
-igraph
-pandas
-numpy
-colour
-requests
-tqdm
-aiosqlite
-aiohttp
-matplotlib
+-r ./warmlab/warm/requirements.txt
+-r ./warmlab/local_worker/requirements.txt

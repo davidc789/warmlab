@@ -2,7 +2,6 @@ scipy
 igraph
 pandas
 numpy
-requests
 flask
 waitress
 cvxpy

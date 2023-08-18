@@ -1,8 +1,10 @@
--r ../../requirements.txt
+aiosqlite
+aiohttp
 cvxpy[CVXOPT,GUROBI]
-jupyterlab
 scipy
 igraph
 pandas
 numpy
 plotly
+tqdm
+matplotlib

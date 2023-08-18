@@ -1,5 +1,5 @@
 """ Implements the WARM model. """
-
+import abc
 import logging
 
 
@@ -8,6 +8,7 @@ from typing import TypedDict, Optional, Callable
 from dataclasses import dataclass, field
 import json
 
+import cvxpy
 import numpy as np
 from scipy.integrate import solve_ivp
 import igraph as ig
@@ -37,37 +38,44 @@ def fast_choose(q: float, arr: list[int], p: list[float]):
     raise ValueError(f"q={q} is out of [0, 1]")
 
 
-# class WarmGraphResults(WarmResults):
-#     _graph: ig.Graph
-#
-#     def __init__(self, problem: cp.Problem, graph: ig.Graph):
-#         super().__init__(problem)
-#         self._graph = graph
-#
-#     def draw(self):
-#         fig, ax = plt.subplots()
-#         ig.plot(
-#             self._graph,
-#             vertex_size=20,
-#             vertex_label=['first', 'second', 'third', 'fourth'],
-#             edge_width=[1, 4],
-#             edge_color=['black', 'grey'],
-#             target=ax
-#         )
+class JsonSerialisable(object, metaclass=abc.ABCMeta):
+    __slots__ = ()
+
+    @abc.abstractmethod
+    def to_dict(self):
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def from_dict(cls, dct: dict):
+        pass
+
+    def to_json(self, *args, **kargs):
+        """ Converts the class to a json string. """
+        return json.dumps(self.to_dict(), *args, **kargs)
+
+    @classmethod
+    def from_json(cls, string: str, *args, **kargs):
+        """ Constructs the object from a json serialisation.
+
+        :param string: The json serialised format.
+        """
+        return cls.from_dict(json.loads(string, *args, **kargs))
 
 
-class WarmModel(object):
+class WarmModel(JsonSerialisable):
     """ A generic WARM model specification. """
-    bins: list[list[int]]                    # The grouping of elements.
+    id: Optional[str]                        # The model ID, for tagging purpose.
     probs: np.ndarray                        # Probability of bins.
-    bins_count: int                          # Number of bins.
-    elem_count: int                          # Number of elements.
     is_graph: bool                           # Whether the model is graph-based.
     graph: Optional[ig.Graph]                # If is_graph, gives the graph.
-    _inc_matrix: Optional[np.ndarray]        # The incidence matrix.
-    rev_bin_map: list[list[int]]             # The reversed bin mapping.
+    bins: list[list[int]]                    # The grouping of elements.
+    bins_count: int                          # Number of bins.
+    elem_count: int                          # Number of elements.
+    _inc_matrix: Optional[np.ndarray] = None         # The incidence matrix.
+    _rev_bin_map: Optional[list[list[int]]] = None   # The reversed bin mapping.
 
-    def __init__(self, probs: Optional[list[float]] = None,
+    def __init__(self, model_id: Optional[str] = None, probs: Optional[list[float]] = None,
                  is_graph: bool = False,
                  graph: Optional[ig.Graph] = None, bins: list[list[int]] = None,
                  elem_count: Optional[int] = None,
@@ -86,6 +94,8 @@ class WarmModel(object):
         :param elem_count: The number of elements in the model.
         :param weight_func: Corresponds to W in a WARM model.
         """
+        self.id = model_id
+
         if is_graph:
             if graph is None:
                 raise ValueError("graph must be supplied with is_graph true")
@@ -112,8 +122,6 @@ class WarmModel(object):
         # Post-init computations
         self.is_graph = is_graph
         self.bins_count = len(self.bins)
-        self._inc_matrix = None
-        self.rev_bin_map = calc_rev_bin_map(self.bins, self.elem_count)
 
     @property
     def incidence_matrix(self) -> np.ndarray:
@@ -129,6 +137,14 @@ class WarmModel(object):
 
         return self.incidence_matrix
 
+    @property
+    def rev_bin_map(self) -> list[list[int]]:
+        """ The reverse-bin-map, lazily computed. """
+        if self._rev_bin_map is None:
+            self._rev_bin_map = calc_rev_bin_map(self.bins, self.elem_count)
+
+        return self._rev_bin_map
+
     def to_dict(self):
         """ A no-copy dictionary conversion. """
         if self.is_graph:
@@ -136,6 +152,7 @@ class WarmModel(object):
         else:
             graph_dict = None
         return {
+            "id": self.id,
             "probs": self.probs.tolist(),
             "is_graph": self.is_graph,
             "graph": graph_dict,
@@ -156,6 +173,7 @@ class WarmModel(object):
             graph = ig.Graph.DictDict(dct["graph"])
 
         return cls(
+            model_id=dct["id"],
             probs=dct["probs"],
             is_graph=is_graph,
             graph=graph,
@@ -163,35 +181,48 @@ class WarmModel(object):
             elem_count=dct["elem_count"]
         )
 
-    def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict(), *args, **kargs)
 
-    @classmethod
-    def from_json(cls, string: str, *args, **kargs):
-        """ Constructs the object from a json serialisation.
-
-        :param string: The json serialised format.
-        """
-        return cls.from_dict(json.loads(string, *args, **kargs))
+@dataclass(slots=True, frozen=True)
+class WarmSolution(JsonSerialisable):
+    problem: cvxpy.Problem
+    obj_value: float
+    duals: tuple[float, float, float]
+    x_opt: list[float]
 
 
 @dataclass(slots=True)
-class WarmSimulationData(object):
-    model: WarmModel        # The model.
-    root: str               # The starting point of the simulation.
-    targetTime: int         # Target time.
-    t: int                  # Current time.
+class WarmSimulation(JsonSerialisable):
+    """ Warm simulation dataclass. """
+    root: str           # The starting point of the simulation.
+    targetTime: int     # Target time.
+    t: int              # Current time.
     trialId: Optional[int] = None          # The trialId. Used only for tagging.
     counts: Optional[list[int]] = None     # Current counts.
     x: list[float] = field(init=False)     # Current proportions.
     omegas: list[int] = field(init=False)  # Current node sums.
 
+
+@dataclass(slots=True)
+class WarmSimulationData(JsonSerialisable):
+    # TODO: Rename this to modelId
+    simId: str                            # The model ID for identification.
+    model: WarmModel                      # The actual model.
+
+    root: str               # The starting point of the simulation.
+    targetTime: int         # Target time.
+    t: int                  # Current time.
+    trialId: Optional[int] = None           # The trialId. Used only for tagging.
+    counts: Optional[list[int]] = None      # Current counts.
+    x: list[float] = field(init=False)      # Current proportions.
+    omegas: list[int] = field(init=False)   # Current node sums.
+    solution: Optional[WarmSolution] = None      # Solution data.
+    simulation: Optional[WarmSimulation] = None  # Simulation data, if applicable.
+
     def __post_init__(self):
-        if self.counts is None:
-            self.counts = [1 for _ in range(self.model.elem_count)]
-        self.x = [x / (self.t + self.model.elem_count) for x in self.counts]
-        self.omegas = [sum(self.counts[i] for i in g) for g in self.model.bins]
+        if self.simulation.counts is None:
+            self.simulation.counts = [1 for _ in range(self.model.elem_count)]
+        self.simulation.x = [x / (self.t + self.model.elem_count) for x in self.counts]
+        self.simulation.omegas = [sum(self.counts[i] for i in g) for g in self.model.bins]
 
     @classmethod
     def from_dict(cls, dct: dict):
@@ -282,15 +313,15 @@ def solve(model: WarmModel):
 
     # The optimal value for x is stored in `x.value`.
     values = [y.value for y in x]
-    print(values)
 
     # The optimal Lagrange multiplier for a constraint is stored in
     # `constraint.dual_value`.
-    print(constraints[0].dual_value)
-    print(constraints[1].dual_value)
-    print(constraints[2].dual_value)
-
-    return result, values
+    return WarmSolution(
+        problem=prb,
+        obj_value=result,
+        duals=(constraints[0].dual_value, constraints[1].dual_value, constraints[2].dual_value),
+        x_opt=values
+    )
 
 
 # TODO
