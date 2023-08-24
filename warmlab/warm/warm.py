@@ -2,13 +2,11 @@
 import abc
 import logging
 
-
 from collections.abc import Sequence
 from typing import TypedDict, Optional, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import json
 
-import cvxpy
 import numpy as np
 from scipy.integrate import solve_ivp
 import igraph as ig
@@ -29,29 +27,44 @@ class Action(TypedDict):
 Actions = list[Action]
 
 def fast_choose(q: float, arr: list[int], p: list[float]):
-    cp = np.cumsum(p)
+    i = 0
+    acc = 0
+    while i < len(p):
+        acc += p[i]
 
-    for i, x in enumerate(cp):
-        if x >= q:
+        if acc >= q:
             return arr[i]
 
+        i += 1
     raise ValueError(f"q={q} is out of [0, 1]")
 
 
 class JsonSerialisable(object, metaclass=abc.ABCMeta):
+    """ A mixin for json-serialisation. """
     __slots__ = ()
 
     @abc.abstractmethod
     def to_dict(self):
+        """ Converts the object to a dictionary representation.
+
+        :return: The dictionary representation.
+        """
         pass
 
     @classmethod
     @abc.abstractmethod
     def from_dict(cls, dct: dict):
+        """ Loads the object from a dictionary representation.
+
+        :param dct: The dictionary to load from.
+        """
         pass
 
     def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
+        """ Converts the class to a json string.
+
+        :return: The json string representation.
+        """
         return json.dumps(self.to_dict(), *args, **kargs)
 
     @classmethod
@@ -135,7 +148,7 @@ class WarmModel(JsonSerialisable):
 
             self._inc_matrix = np.array([_to_flag(b, self.elem_count) for b in self.bins])
 
-        return self.incidence_matrix
+        return self._inc_matrix
 
     @property
     def rev_bin_map(self) -> list[list[int]]:
@@ -184,93 +197,72 @@ class WarmModel(JsonSerialisable):
 
 @dataclass(slots=True, frozen=True)
 class WarmSolution(JsonSerialisable):
-    problem: cvxpy.Problem
     obj_value: float
-    duals: tuple[float, float, float]
+    duals: tuple[float, list[float], float]
     x_opt: list[float]
 
-
-@dataclass(slots=True)
-class WarmSimulation(JsonSerialisable):
-    """ Warm simulation dataclass. """
-    root: str           # The starting point of the simulation.
-    targetTime: int     # Target time.
-    t: int              # Current time.
-    trialId: Optional[int] = None          # The trialId. Used only for tagging.
-    counts: Optional[list[int]] = None     # Current counts.
-    x: list[float] = field(init=False)     # Current proportions.
-    omegas: list[int] = field(init=False)  # Current node sums.
-
-
-@dataclass(slots=True)
-class WarmSimulationData(JsonSerialisable):
-    # TODO: Rename this to modelId
-    simId: str                            # The model ID for identification.
-    model: WarmModel                      # The actual model.
-
-    root: str               # The starting point of the simulation.
-    targetTime: int         # Target time.
-    t: int                  # Current time.
-    trialId: Optional[int] = None           # The trialId. Used only for tagging.
-    counts: Optional[list[int]] = None      # Current counts.
-    x: list[float] = field(init=False)      # Current proportions.
-    omegas: list[int] = field(init=False)   # Current node sums.
-    solution: Optional[WarmSolution] = None      # Solution data.
-    simulation: Optional[WarmSimulation] = None  # Simulation data, if applicable.
-
-    def __post_init__(self):
-        if self.simulation.counts is None:
-            self.simulation.counts = [1 for _ in range(self.model.elem_count)]
-        self.simulation.x = [x / (self.t + self.model.elem_count) for x in self.counts]
-        self.simulation.omegas = [sum(self.counts[i] for i in g) for g in self.model.bins]
+    def to_dict(self):
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, dct: dict):
-        """ Loads the model from a dictionary representation.
+        return cls(**dct)
 
-        :param dct: The dictionary to load from.
-        """
+
+@dataclass(slots=True)
+class WarmSimData(JsonSerialisable):
+    model: WarmModel        # The actual model.
+    root: str               # The starting point of the simulation.
+    targetTime: int         # Target time.
+    t: int                  # Current time.
+    trialId: Optional[int] = None            # The trialId. Used only for tagging.
+    counts: Optional[list[int]] = None       # Current counts.
+    solution: Optional[WarmSolution] = None  # Solution data.
+    x: list[float] = field(init=False)       # Current proportions.
+    omegas: list[int] = field(init=False)    # Current node sums.
+
+    def __post_init__(self):
+        if self.counts is None:
+            self.counts = [1 for _ in range(self.model.elem_count)]
+        self.x = [x / (self.t + self.model.elem_count) for x in self.counts]
+        self.omegas = [sum(self.counts[i] for i in g) for g in self.model.bins]
+
+    @classmethod
+    def from_dict(cls, dct: dict):
+        solution = None
+        if dct["solution"] is not None:
+            solution = WarmSolution.from_dict(dct["solution"])
+
         return cls(
             model=WarmModel.from_dict(dct["model"]),
             root=dct["root"],
-            targetTime=dct["n"],
+            targetTime=dct["targetTIme"],
             t=dct["t"],
             trialId=dct["trialId"],
-            counts=dct["count"]
+            counts=dct["counts"],
+            solution=solution
         )
 
     def to_dict(self):
-        """ Converts the model to a dictionary representation.
+        solution_dict = None
+        if self.solution is not None:
+            solution_dict = self.solution.to_dict()
 
-        :return: The dictionary representation.
-        """
         return {
             "model": self.model.to_dict(),
             "root": self.root,
-            "n": self.targetTime,
+            "targetTIme": self.targetTime,
             "t": self.t,
             "trialId": self.trialId,
-            "count": self.counts
+            "counts": self.counts,
+            "solution": solution_dict
         }
 
-    @classmethod
-    def from_json(cls, string: str, *args, **kargs):
-        """ Constructs the object from a json serialisation.
 
-        :param string: The json serialised format.
-        """
-        return cls.from_dict(json.loads(string, *args, **kargs))
-
-    def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict(), *args, **kargs)
-
-
-def simulate(sim: WarmSimulationData):
-    """
+def simulate(sim: WarmSimData):
+    """ Conducts simulation as directed.
 
     :param sim: The simulation data object.
-    :param rep: Number of repetitions.
     """
     # The reversed map tells us which bins need to reevaluate when e is updated.
     rev_bin_map = sim.model.rev_bin_map
@@ -317,9 +309,8 @@ def solve(model: WarmModel):
     # The optimal Lagrange multiplier for a constraint is stored in
     # `constraint.dual_value`.
     return WarmSolution(
-        problem=prb,
         obj_value=result,
-        duals=(constraints[0].dual_value, constraints[1].dual_value, constraints[2].dual_value),
+        duals=(constraints[0].dual_value, constraints[1].dual_value.tolist(), constraints[2].dual_value.tolist()),
         x_opt=values
     )
 
@@ -392,6 +383,8 @@ if __name__ == '__main__':
     m = 3
     graph = ring_2d_graph(m)
     model = WarmModel(is_graph=True, graph=graph)
-    sim = simulate(WarmSimulationData(model=model, root="0.0", t=0,
-                                      targetTime=1_000_000))
+
+    sim = simulate(WarmSimData(model=model, root="0.0", t=0,
+                               targetTime=1_000_000))
+    sim.solution = solve(model)
     print(sim.to_json(indent=True))

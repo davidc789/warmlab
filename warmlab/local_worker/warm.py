@@ -1,11 +1,10 @@
 """ Implements the WARM model. """
-
+import abc
 import logging
-
 
 from collections.abc import Sequence
 from typing import TypedDict, Optional, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import json
 
 import numpy as np
@@ -28,46 +27,68 @@ class Action(TypedDict):
 Actions = list[Action]
 
 def fast_choose(q: float, arr: list[int], p: list[float]):
-    cp = np.cumsum(p)
+    i = 0
+    acc = 0
+    while i < len(p):
+        acc += p[i]
 
-    for i, x in enumerate(cp):
-        if x >= q:
+        if acc >= q:
             return arr[i]
 
+        i += 1
     raise ValueError(f"q={q} is out of [0, 1]")
 
 
-# class WarmGraphResults(WarmResults):
-#     _graph: ig.Graph
-#
-#     def __init__(self, problem: cp.Problem, graph: ig.Graph):
-#         super().__init__(problem)
-#         self._graph = graph
-#
-#     def draw(self):
-#         fig, ax = plt.subplots()
-#         ig.plot(
-#             self._graph,
-#             vertex_size=20,
-#             vertex_label=['first', 'second', 'third', 'fourth'],
-#             edge_width=[1, 4],
-#             edge_color=['black', 'grey'],
-#             target=ax
-#         )
+class JsonSerialisable(object, metaclass=abc.ABCMeta):
+    """ A mixin for json-serialisation. """
+    __slots__ = ()
+
+    @abc.abstractmethod
+    def to_dict(self):
+        """ Converts the object to a dictionary representation.
+
+        :return: The dictionary representation.
+        """
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def from_dict(cls, dct: dict):
+        """ Loads the object from a dictionary representation.
+
+        :param dct: The dictionary to load from.
+        """
+        pass
+
+    def to_json(self, *args, **kargs):
+        """ Converts the class to a json string.
+
+        :return: The json string representation.
+        """
+        return json.dumps(self.to_dict(), *args, **kargs)
+
+    @classmethod
+    def from_json(cls, string: str, *args, **kargs):
+        """ Constructs the object from a json serialisation.
+
+        :param string: The json serialised format.
+        """
+        return cls.from_dict(json.loads(string, *args, **kargs))
 
 
-class WarmModel(object):
+class WarmModel(JsonSerialisable):
     """ A generic WARM model specification. """
-    bins: list[list[int]]                    # The grouping of elements.
+    id: Optional[str]                        # The model ID, for tagging purpose.
     probs: np.ndarray                        # Probability of bins.
-    bins_count: int                          # Number of bins.
-    elem_count: int                          # Number of elements.
     is_graph: bool                           # Whether the model is graph-based.
     graph: Optional[ig.Graph]                # If is_graph, gives the graph.
-    _inc_matrix: Optional[np.ndarray]        # The incidence matrix.
-    rev_bin_map: list[list[int]]             # The reversed bin mapping.
+    bins: list[list[int]]                    # The grouping of elements.
+    bins_count: int                          # Number of bins.
+    elem_count: int                          # Number of elements.
+    _inc_matrix: Optional[np.ndarray] = None         # The incidence matrix.
+    _rev_bin_map: Optional[list[list[int]]] = None   # The reversed bin mapping.
 
-    def __init__(self, probs: Optional[list[float]] = None,
+    def __init__(self, model_id: Optional[str] = None, probs: Optional[list[float]] = None,
                  is_graph: bool = False,
                  graph: Optional[ig.Graph] = None, bins: list[list[int]] = None,
                  elem_count: Optional[int] = None,
@@ -86,6 +107,8 @@ class WarmModel(object):
         :param elem_count: The number of elements in the model.
         :param weight_func: Corresponds to W in a WARM model.
         """
+        self.id = model_id
+
         if is_graph:
             if graph is None:
                 raise ValueError("graph must be supplied with is_graph true")
@@ -112,8 +135,6 @@ class WarmModel(object):
         # Post-init computations
         self.is_graph = is_graph
         self.bins_count = len(self.bins)
-        self._inc_matrix = None
-        self.rev_bin_map = calc_rev_bin_map(self.bins, self.elem_count)
 
     @property
     def incidence_matrix(self) -> np.ndarray:
@@ -127,7 +148,15 @@ class WarmModel(object):
 
             self._inc_matrix = np.array([_to_flag(b, self.elem_count) for b in self.bins])
 
-        return self.incidence_matrix
+        return self._inc_matrix
+
+    @property
+    def rev_bin_map(self) -> list[list[int]]:
+        """ The reverse-bin-map, lazily computed. """
+        if self._rev_bin_map is None:
+            self._rev_bin_map = calc_rev_bin_map(self.bins, self.elem_count)
+
+        return self._rev_bin_map
 
     def to_dict(self):
         """ A no-copy dictionary conversion. """
@@ -136,6 +165,7 @@ class WarmModel(object):
         else:
             graph_dict = None
         return {
+            "id": self.id,
             "probs": self.probs.tolist(),
             "is_graph": self.is_graph,
             "graph": graph_dict,
@@ -156,6 +186,7 @@ class WarmModel(object):
             graph = ig.Graph.DictDict(dct["graph"])
 
         return cls(
+            model_id=dct["id"],
             probs=dct["probs"],
             is_graph=is_graph,
             graph=graph,
@@ -163,29 +194,32 @@ class WarmModel(object):
             elem_count=dct["elem_count"]
         )
 
-    def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict(), *args, **kargs)
+
+@dataclass(slots=True, frozen=True)
+class WarmSolution(JsonSerialisable):
+    obj_value: float
+    duals: tuple[float, list[float], float]
+    x_opt: list[float]
+
+    def to_dict(self):
+        return asdict(self)
 
     @classmethod
-    def from_json(cls, string: str, *args, **kargs):
-        """ Constructs the object from a json serialisation.
-
-        :param string: The json serialised format.
-        """
-        return cls.from_dict(json.loads(string, *args, **kargs))
+    def from_dict(cls, dct: dict):
+        return cls(**dct)
 
 
 @dataclass(slots=True)
-class WarmSimulationData(object):
-    model: WarmModel        # The model.
+class WarmSimData(JsonSerialisable):
+    model: WarmModel        # The actual model.
     root: str               # The starting point of the simulation.
     targetTime: int         # Target time.
     t: int                  # Current time.
-    trialId: Optional[int] = None          # The trialId. Used only for tagging.
-    counts: Optional[list[int]] = None     # Current counts.
-    x: list[float] = field(init=False)     # Current proportions.
-    omegas: list[int] = field(init=False)  # Current node sums.
+    trialId: Optional[int] = None            # The trialId. Used only for tagging.
+    counts: Optional[list[int]] = None       # Current counts.
+    solution: Optional[WarmSolution] = None  # Solution data.
+    x: list[float] = field(init=False)       # Current proportions.
+    omegas: list[int] = field(init=False)    # Current node sums.
 
     def __post_init__(self):
         if self.counts is None:
@@ -195,51 +229,40 @@ class WarmSimulationData(object):
 
     @classmethod
     def from_dict(cls, dct: dict):
-        """ Loads the model from a dictionary representation.
+        solution = None
+        if dct["solution"] is not None:
+            solution = WarmSolution.from_dict(dct["solution"])
 
-        :param dct: The dictionary to load from.
-        """
         return cls(
             model=WarmModel.from_dict(dct["model"]),
             root=dct["root"],
-            targetTime=dct["n"],
+            targetTime=dct["targetTIme"],
             t=dct["t"],
             trialId=dct["trialId"],
-            counts=dct["count"]
+            counts=dct["counts"],
+            solution=solution
         )
 
     def to_dict(self):
-        """ Converts the model to a dictionary representation.
+        solution_dict = None
+        if self.solution is not None:
+            solution_dict = self.solution.to_dict()
 
-        :return: The dictionary representation.
-        """
         return {
             "model": self.model.to_dict(),
             "root": self.root,
-            "n": self.targetTime,
+            "targetTIme": self.targetTime,
             "t": self.t,
             "trialId": self.trialId,
-            "count": self.counts
+            "counts": self.counts,
+            "solution": solution_dict
         }
 
-    def to_json(self, *args, **kargs):
-        """ Converts the class to a json string. """
-        return json.dumps(self.to_dict(), *args, **kargs)
 
-    @classmethod
-    def from_json(cls, string: str, *args, **kargs):
-        """ Constructs the object from a json serialisation.
-
-        :param string: The json serialised format.
-        """
-        return cls.from_dict(json.loads(string, *args, **kargs))
-
-
-def simulate(sim: WarmSimulationData):
-    """
+def simulate(sim: WarmSimData):
+    """ Conducts simulation as directed.
 
     :param sim: The simulation data object.
-    :param rep: Number of repetitions.
     """
     # The reversed map tells us which bins need to reevaluate when e is updated.
     rev_bin_map = sim.model.rev_bin_map
@@ -282,15 +305,14 @@ def solve(model: WarmModel):
 
     # The optimal value for x is stored in `x.value`.
     values = [y.value for y in x]
-    print(values)
 
     # The optimal Lagrange multiplier for a constraint is stored in
     # `constraint.dual_value`.
-    print(constraints[0].dual_value)
-    print(constraints[1].dual_value)
-    print(constraints[2].dual_value)
-
-    return result, values
+    return WarmSolution(
+        obj_value=result,
+        duals=(constraints[0].dual_value, constraints[1].dual_value.tolist(), constraints[2].dual_value.tolist()),
+        x_opt=values
+    )
 
 
 # TODO
@@ -361,6 +383,8 @@ if __name__ == '__main__':
     m = 3
     graph = ring_2d_graph(m)
     model = WarmModel(is_graph=True, graph=graph)
-    sim = simulate(WarmSimulationData(model=model, root="0.0", t=0,
-                                      targetTime=1_000_000))
+
+    sim = simulate(WarmSimData(model=model, root="0.0", t=0,
+                               targetTime=1_000_000))
+    sim.solution = solve(model)
     print(sim.to_json(indent=True))

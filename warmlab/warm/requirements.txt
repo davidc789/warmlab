@@ -8,3 +8,6 @@ numpy
 plotly
 tqdm
 matplotlib
+networkx
+dash
+numba

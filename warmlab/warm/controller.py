@@ -35,8 +35,8 @@ class Target(NamedTuple):
 class SimulationContext(NamedTuple):
     """ Global context for the simulation controller. """
     target: Target
-    pending_simulation: asyncio.Queue[tuple[int, int, warm.WarmSimulationData] | tuple[float, None, None]]
-    pending_storage: asyncio.Queue[warm.WarmSimulationData]
+    pending_simulation: asyncio.Queue[tuple[int, int, warm.WarmSimData] | tuple[float, None, None]]
+    pending_storage: asyncio.Queue[warm.WarmSimData]
     db: aiosqlite.Connection
     sessions: list[aiohttp.ClientSession]
     pbar_completed: Optional[tqdm] = None
@@ -91,7 +91,7 @@ async def create_simdata_if_missing(db: aiosqlite.Connection):
         await db.commit()
 
 
-async def insert_simulation(context: SimulationContext, sim: warm.WarmSimulationData,
+async def insert_simulation(context: SimulationContext, sim: warm.WarmSimData,
                             on_failure: Literal["raise", "ignore", "update"] = "raise"):
     """ Inserts the given simulation data into database.
 
@@ -147,7 +147,7 @@ async def worker(
             response = await session.post(f"/api/simulate", json=sim.to_dict())
             response.raise_for_status()
             text = await response.text()
-            res = warm.WarmSimulationData.from_json(text)
+            res = warm.WarmSimData.from_json(text)
             await context.pending_storage.put(res)
             context.pending_simulation.task_done()
         except ValueError:
@@ -172,7 +172,7 @@ async def prepare_simulation(
         # Obtains relevant information regarding the simulation of interest.
         # First query the master data.
         await cursor.execute(f"""
-            SELECT simId, completedTrials, maxTime FROM SimInfo 
+            SELECT simId, solution, completedTrials, maxTime FROM SimInfo 
             WHERE simId = '{context.target.simId}'
         """)
         info_row = await cursor.fetchone()
@@ -180,20 +180,20 @@ async def prepare_simulation(
         # Then query detailed sim data.
         await cursor.execute(f"""
             SELECT trialId, max(endTime) AS endTime, counts FROM SimData
-            WHERE SimID = '{context.target.simId}'
+            WHERE simId = '{context.target.simId}'
             GROUP BY trialId
             ORDER BY trialId
         """)
         data_rows = sorted(await cursor.fetchall(), key=simulation_order)
 
     completed_count = 0  # Tracks the number of completed jobs.
-    latest_sims: list[warm.WarmSimulationData]  # Tracks the latest simulation trials.
+    latest_sims: list[warm.WarmSimData]  # Tracks the latest simulation trials.
 
     if data_rows is None:
         # No data available about this simulation. Start from scratch.
         # Also need to update the database to include a zero entry.
         existing_latest_sims = []
-        latest_sims = [warm.WarmSimulationData(
+        latest_sims = [warm.WarmSimData(
             model=context.target.model,
             root="0.0",
             counts=None,
@@ -204,7 +204,7 @@ async def prepare_simulation(
         print(" - No prior simulation found. Starting from scratch.")
     else:
         # Use the latest entries.
-        existing_latest_sims = [warm.WarmSimulationData(
+        existing_latest_sims = [warm.WarmSimData(
             model=context.target.model,
             root="0.0",
             counts=json.loads(data_row["counts"]),
@@ -212,7 +212,7 @@ async def prepare_simulation(
             t=data_row["endTime"],
             trialId=data_row["trialId"]
         ) for data_row in data_rows]
-        latest_sims = existing_latest_sims + [warm.WarmSimulationData(
+        latest_sims = existing_latest_sims + [warm.WarmSimData(
             model=context.target.model,
             root="0.0",
             counts=None,
@@ -222,18 +222,25 @@ async def prepare_simulation(
         ) for i in range(len(data_rows), context.target.n)]
         print(f" - {len(data_rows)} previous simulations found. Using those as well")
 
-    # TODO: solving support
+    # If solving is desired, solve it quickly.
+    solution = None
     if use_solver:
-        pass
+        solution = warm.solve(model=context.target.model).to_json()
+        print(" - Solver completed successfully")
 
-    # Ensure the database know about this simulation.
-    if info_row is None:
-        async with context.db.cursor() as cursor:
-            await cursor.execute(f"""
-                INSERT INTO SimInfo (simID, model) 
-                VALUES ('{context.target.simId}', '{context.target.model.to_json()}')
-            """)
-            await context.db.commit()
+    # Ensure the database know about this simulation and have the solution available.
+    async with context.db.cursor() as cursor:
+        await cursor.execute(f"""
+            INSERT OR IGNORE INTO SimInfo (simId, model, solution)
+            VALUES ('{context.target.simId}', '{context.target.model.to_json()}', '{solution}')
+        """)
+        await cursor.execute(f"""
+            UPDATE SimInfo
+            SET model = '{context.target.model.to_json()}',
+                solution = '{solution}'
+            WHERE simId = '{context.target.simId}'
+        """)
+        await context.db.commit()
 
     # Place a few initial simulations and count completed simulations.
     for sim in latest_sims:
@@ -265,7 +272,7 @@ async def simulation_manager(context: SimulationContext, completed_count: int):
 
         # Adds the next simulation item into the queue.
         if res.t < context.target.t:
-            await context.pending_simulation.put((res.t, res.trialId, warm.WarmSimulationData(
+            await context.pending_simulation.put((res.t, res.trialId, warm.WarmSimData(
                 model=res.model,
                 root=res.root,
                 counts=res.counts,
@@ -287,10 +294,13 @@ async def simulation_manager(context: SimulationContext, completed_count: int):
     for _ in context.sessions:
         await context.pending_simulation.put((math.inf, None, None))
 
+    # Overwrite the completed trials and maxtime.
     async with context.db.cursor() as cursor:
         await cursor.execute(f"""
-            REPLACE INTO SimInfo (simId, model, completedTrials, maxTime)
-            VALUES ('{context.target.simId}', '{context.target.model.to_json()}', {context.target.n}, {context.target.t})
+            UPDATE SimInfo
+            SET completedTrials = {context.target.n},
+                maxTime = {context.target.t}
+            WHERE simId = '{context.target.simId}'
         """)
         await context.db.commit()
 
@@ -388,40 +398,36 @@ async def main(args: Optional[list[str]] = None):
 
     :param args: The command line arguments.
     """
+    targets = ([
+        Target(
+            t=10_000_000,
+            n=360,
+            simId=f"ring_2d_{i}",
+            model=warm.WarmModel(
+                is_graph=True,
+                graph=warm.ring_2d_graph(i),
+                model_id=f"ring_2d_{i}"
+            ),
+        ) for i in range(3, 11)
+    ])
+    workers = ([]
+        # + [WorkerData(f"http://127.0.0.1:{port}") for port in range(8080, 8081)]
+        + [WorkerData(f"http://127.0.0.1:{port}") for port in range(8081 - 4, 8081)]
+        # + [WorkerData(f"http://10.0.0.1:{port}") for port in range(8081 - 8, 8081)]
+        # + [WorkerData(f"http://10.0.0.3:{port}") for port in range(8081 - 8, 8081)]
+        # + [WorkerData(f"http://10.0.0.4:{port}") for port in range(8081 - 8, 8081)]
+        # + [WorkerData("http://warmlab.azurewebsites.net")]
+    )
+
     # Creates the main task.
-
     # Executes the task until completion.
-    i = 4
-    task = asyncio.create_task(simulate_one_target(Target(
-        t=10_000_000,
-        n=100,
-        simId=f"ring_2d_{i}",
-        model=warm.WarmModel(is_graph=True, graph=warm.ring_2d_graph(i)),
-    ), workersData=[
-        # WorkerData("http://warmlab.azurewebsites.net"),
-        # WorkerData("http://127.0.0.1:8078"),
-        # WorkerData("http://127.0.0.1:8079"),
-        WorkerData("http://127.0.0.1:8080"),
-        # WorkerData("http://10.0.0.1:8074"),
-        # WorkerData("http://10.0.0.1:8075"),
-        # WorkerData("http://10.0.0.1:8076"),
-        # WorkerData("http://10.0.0.1:8077"),
-        # WorkerData("http://10.0.0.1:8078"),
-        # WorkerData("http://10.0.0.1:8079"),
-        # WorkerData("http://10.0.0.1:8080"),
-        # WorkerData("http://10.0.0.3:8076"),
-        # WorkerData("http://10.0.0.3:8077"),
-        # WorkerData("http://10.0.0.3:8078"),
-        # WorkerData("http://10.0.0.3:8079"),
-        # WorkerData("http://10.0.0.3:8080"),
-        # WorkerData("http://10.0.0.4:8076"),
-        # WorkerData("http://10.0.0.4:8077"),
-        # WorkerData("http://10.0.0.4:8078"),
-        # WorkerData("http://10.0.0.4:8079"),
-        # WorkerData("http://10.0.0.4:8080")
-    ]))
+    for target in targets:
+        task = asyncio.create_task(simulate_one_target(target, workersData=workers))
 
-    await task
+        # This line is here so the tasks are not created simultaneously. If the
+        # number of workers is so huge that they start to become idle, remove
+        # this line.
+        await task
 
     # try:
     #     await task
