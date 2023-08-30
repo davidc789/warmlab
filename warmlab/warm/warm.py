@@ -1,12 +1,16 @@
 """ Implements the WARM model. """
+
 import abc
 import logging
+from math import pi
+from itertools import chain
 
 from collections.abc import Sequence
 from typing import TypedDict, Optional, Callable
 from dataclasses import dataclass, field, asdict
 import json
 
+import igraph
 import numpy as np
 from scipy.integrate import solve_ivp
 import igraph as ig
@@ -351,6 +355,27 @@ def ring_2d_graph(m: int):
     return graph
 
 
+def ring_2d_layout(m: int, r1: float = 0.5, r2_to_r1: float = 0.5, x_offset: int = 0, y_offset: int = 0):
+    """ An optimal layout for the ring_2d family.
+
+    :param m: Index of the graph.
+    :param r1: Outer radius.
+    :param r2_to_r1: Inner radius as a fraction of outer radius.
+    :param x_offset: Shift in the x direction.
+    :param y_offset: Shift in the y direction.
+    """
+    r2 = r2_to_r1 * r1
+
+    omegas = np.linspace(0, 2 * pi, m)
+    xs_outer = r1 * np.cos(omegas) + x_offset
+    xs_inner = r2 * np.cos(omegas) + x_offset
+    ys_outer = r1 * np.sin(omegas) + y_offset
+    ys_inner = r1 * np.sin(omegas) + y_offset
+
+    return igraph.Layout([(x, y) for x, y in zip(
+        chain(xs_outer, xs_inner), chain(ys_outer, ys_inner))])
+
+
 def grid(m: int):
     """ Creates a 2D grid graph.
 
@@ -359,8 +384,8 @@ def grid(m: int):
     """
     # Horizontal + Vertical
     edges = ([(m * j + i, m * j + i + 1) for i in range(m - 1) for j in range(m)]
-           + [(m * j + i, m * j + i + m) for i in range(m) for j in range(m - 1)])
-    graph = ig.Graph(n = m * m, edges=edges)
+             + [(m * j + i, m * j + i + m) for i in range(m) for j in range(m - 1)])
+    graph = ig.Graph(n=m * m, edges=edges)
     return graph
 
 

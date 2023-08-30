@@ -11,7 +11,7 @@ from dash import Dash, dcc, html, Input, Output, callback
 import dash_cytoscape as cyto
 import plotly.express as px
 
-from DataManager import DataManager
+from ContextManagers import DatabaseManager
 from config import config
 
 # Canvas dimension, in px.
@@ -67,7 +67,7 @@ class WarmResults(object):
 
 def warm_analyse_mean(simId: str):
     # Fetch data.
-    with DataManager(config.DB_LOCATION, use_dict_factory=True) as db:
+    with DatabaseManager(config.DB_LOCATION, use_dict_factory=True) as db:
         cursor: sqlite3.Cursor
         cursor = db.cursor()
         cursor.execute(f"""
@@ -90,10 +90,10 @@ def warm_analyse_mean(simId: str):
     proportions = [x.x for x in sims]
 
     # Convert everything to cytoscape. Phew.
-    graph = sims[0].model.graph
+    model = sims[0].model
     nodes: list[NodeDict]
     edges: list[EdgeDict]
-    nodes, edges = graph.to_dict_list(use_vids=False)
+    nodes, edges = model.graph.to_dict_list(use_vids=False)
 
     # Change 'name' into 'id' for the nodes. I know.
     for node in nodes:
@@ -107,7 +107,7 @@ def warm_analyse_mean(simId: str):
 
     # Compute layouts. Default layout should be between 0 and 1 so scales can
     # be applied consistently for a canvas of arbitrary size.
-    layout = graph.layout()
+    layout = warm.ring_2d_layout(model.elem_count / 2)
     positions = [PositionDict(x=coord[0] * width, y=coord[1] * height) for coord in layout]
 
     # Wrap into Cyto and output the result.
