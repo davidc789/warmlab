@@ -1,0 +1,14 @@
+
+[analyser]
+plotly
+matplotlib
+dash
+dash-cytoscape
+
+[hpc]
+tqdm
+
+[manager]
+aiohttp
+flask
+waitress

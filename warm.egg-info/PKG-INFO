@@ -1,0 +1,17 @@
+Metadata-Version: 2.1
+Name: warm
+Version: 1.0.5
+Summary: Warm core module
+Author: David Chen
+Author-email: david.chen@student.unimelb.edu.au
+Provides-Extra: hpc
+Requires-Dist: tqdm; extra == "hpc"
+Provides-Extra: analyser
+Requires-Dist: plotly; extra == "analyser"
+Requires-Dist: matplotlib; extra == "analyser"
+Requires-Dist: dash; extra == "analyser"
+Requires-Dist: dash-cytoscape; extra == "analyser"
+Provides-Extra: manager
+Requires-Dist: aiohttp; extra == "manager"
+Requires-Dist: flask; extra == "manager"
+Requires-Dist: waitress; extra == "manager"

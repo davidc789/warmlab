@@ -1,0 +1,2 @@
+[console_scripts]
+hpcsim = warmlab.hpc.main:main [hpc]
