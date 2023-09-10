@@ -1,4 +1,4 @@
 env
 dist
-warm.egg-info
-data.sqlite
+*.egg-info
+*.sqlite
