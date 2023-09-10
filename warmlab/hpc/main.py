@@ -85,7 +85,7 @@ def manager():
 
             if res.t < target_dict[res.model.id].t:
                 if config.config.verbose:
-                    print(f" - Simulation {res.model.id} trial {res.trialId} time {res.t} is completed")
+                    print(f" - Simulation {res.model.id} trial {res.trialId} time {res.t} is completed", flush=True)
                 context.pending_simulation.put(warm.WarmSimData(
                     model=res.model,
                     root=res.root,
@@ -97,7 +97,7 @@ def manager():
             else:
                 completed_count += 1
                 if config.config.verbose:
-                    print(f" - Simulation {res.model.id} trial {res.trialId} is completed")
+                    print(f" - Simulation {res.model.id} trial {res.trialId} is completed", flush=True)
                 if config.config.use_progress_bar:
                     pass
                     # if context.pbar_completed is not None:
