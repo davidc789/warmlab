@@ -362,23 +362,23 @@ class DBHandler(WriteHandler):
 
 
 class CSVHandler(WriteHandler):
-    _dir: PathLike
+    _dir: Path
     _count: int
     _file_factory: Optional[str | Callable[[pd.DataFrame, int], str]]
 
     def __init__(self, dir: PathLike, file_factory: Optional[str | Callable[[pd.DataFrame, int], str]] = None):
-        self._dir = dir
+        self._dir = Path(dir)
         self._count = 0
         self._file_factory = file_factory
 
     def write(self, df: pd.DataFrame, **kwargs):
         self._count += 1
         if type(self._file_factory) == "str":
-            filename = self._file_factory
+            filename = self._dir / self._file_factory
         elif self._file_factory is None:
-            filename = f"{self._count}.csv"
+            filename = self._dir / f"{self._count}.csv"
         else:
-            filename = self._file_factory(df, self._count)
+            filename = self._dir / self._file_factory(df, self._count)
         df.to_csv(filename, **kwargs)
 
 
