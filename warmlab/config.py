@@ -1,27 +1,47 @@
 import logging.config
-import os
-from pathlib import Path
-from typing import NamedTuple, Optional, Literal
+from dataclasses import dataclass, field
+from os import PathLike
+from typing import Optional, Literal
 
-import warm
+from . import warm
 
 logger = logging.getLogger(__name__)
 
 
-class WorkerData(NamedTuple):
+@dataclass(slots=True)
+class WorkerData(warm.JsonSerialisable):
     worker_type: Literal["http", "proc"]
     url: Optional[str]
 
 
-class Target(NamedTuple):
+@dataclass(slots=True)
+class Target(warm.JsonSerialisable):
     """ Specifying a simulation target. """
     t: int                             # Target end time.
     n: int                             # Target number of simulations.
-    simId: str                         # The simulation ID.
     model: warm.WarmModel              # The underlying WARM model.
+    # progress: Optional[list[warm.WarmSimData]] = None  # Current simulation progress, if applicable.
+
+    def to_dict(self):
+        return {
+            "t": self.t,
+            "n": self.n,
+            "model": self.model.to_dict(),
+            # "progress": self.progress
+        }
+
+    @classmethod
+    def from_dict(cls, dct: dict):
+        return cls(
+            t=dct["t"],
+            n=dct["n"],
+            model=warm.WarmModel.from_dict(dct["model"]),
+            # "progress": [warm.WarmSimData.from_dict(x) for x in dct["progress"]]
+        )
 
 
-class Config():
+@dataclass()
+class Config(warm.JsonSerialisable):
     # Whether to display progress bars.
     use_progress_bar: bool = True
 
@@ -34,29 +54,28 @@ class Config():
     # Control level of outputting. Disable this in hpc mode to further boost
     # performance. Note that this does not disable the progress bars, so
     # disable them manually if necessary.
-    verbose = True
+    verbose: bool = True
 
     # Location of the database.
-    DB_LOCATION = "../../data.sqlite"
+    db_location: str = "./data.sqlite"
 
     # Directory location for storing csv output.
-    CSV_PATH = "../../output/"
+    csv_path: str = "./data/"
 
     # Frequency of database entry.
-    TIME_STEP = 1_000_000
+    time_step: int = 1_000_000
 
     # Maximum number of rows to buffer. For hpc, consider increasing this.
-    buffer_limit = 100_000
+    buffer_limit: int = 100_000
 
     # Number of processes.
-    n_proc = 2
+    n_proc: int = 2
 
     # The list of simulation targets.
-    targets = ([
+    targets: list[Target] = field(default_factory=lambda: [
         Target(
             t=10_000_000,
             n=1,
-            simId=f"ring_2d_{i}",
             model=warm.WarmModel(
                 is_graph=True,
                 graph=warm.ring_2d_graph(i),
@@ -66,7 +85,7 @@ class Config():
     ])
 
     # A list of workers.
-    workers = (
+    workers: list[WorkerData] = (
         # + [WorkerData(worker_type="html", url=f"http://127.0.0.1:{port}") for port in range(8080,     8081)]
         # + [WorkerData(worker_type="html", url=f"http://10.0.0.1:{port}" ) for port in range(8081 - 8, 8081)]
         # + [WorkerData(worker_type="html", url=f"http://10.0.0.3:{port}" ) for port in range(8081 - 8, 8081)]
@@ -74,14 +93,30 @@ class Config():
         # + [WorkerData("http://warmlab.azurewebsites.net")]
     )
 
-    # A list of process workers
-    proc_workers = (
-        [WorkerData(worker_type="proc", url=None) for _ in range(n_proc)]
-    )
-
     # Time-out for the main manager. Set this to be large, so it only catches
     # extremely abnormal events like one of the process got killed.
-    time_out = 600
+    time_out: int = 6000
+
+    def to_dict(self):
+        return self.__dict__ | {
+            "targets": [x.to_dict() for x in self.targets],
+            "workers": [x.to_dict() for x in self.workers]
+        }
+
+    @classmethod
+    def from_dict(cls, dct: dict):
+        return cls(**(dct | {
+            "targets": [Target.from_dict(x) for x in dct["targets"]],
+            "workers": [WorkerData.from_dict(x) for x in dct["workers"]]
+        }))
 
 
 config = Config()
+
+
+def load_config(path: PathLike, n_proc: Optional[int] = None):
+    with open(path) as f:
+        global config
+        config = Config.from_json(f.read())
+        if n_proc is not None:
+            config.n_proc = n_proc

@@ -1,11 +1,9 @@
 """ The simulation master controller. """
-import dataclasses
 import json
 import logging
 import asyncio
 import math
 from itertools import chain
-from multiprocessing import Process, JoinableQueue, current_process
 
 from typing import Optional, NamedTuple, Literal
 
@@ -14,9 +12,9 @@ import aiohttp
 
 from tqdm import tqdm
 
-from config import config, Target, WorkerData
-import warm
-from ContextManagers import DatabaseManager, ProcessManager, DataManager, CSVHandler
+from ..config import config, Target, WorkerData
+from .. import warm
+from ..ContextManagers import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +26,6 @@ class SimulationContext(NamedTuple):
     db: aiosqlite.Connection
     pbar_completed: Optional[tqdm] = None
     pbar_full: Optional[tqdm] = None
-
-
-@dataclasses.dataclass()
-class HpcContext(object):
-    pending_simulation: JoinableQueue#[warm.WarmSimData]
-    pending_storage: JoinableQueue#[warm.WarmSimData]
-    pbar_completed: Optional[tqdm] = None
-    pbar_full: Optional[tqdm] = None
-
 
 def simulation_order(sim: dict[str, any]):
     """ Specifies how simulations should be ordered.
@@ -116,21 +105,6 @@ async def insert_simulation(context: SimulationContext, sim: warm.WarmSimData,
 
         await context.db.commit()
 
-
-def hpc_worker(context: HpcContext):
-    """ High-performance computing worker.
-
-    Warning: This operation is synchronous and blocks. Always run it in another
-    process.
-
-    :param context: The simulation context.
-    """
-    for sim in iter(context.pending_simulation.get, None):
-        res = warm.simulate(sim)
-        context.pending_storage.put(res)
-        context.pending_simulation.task_done()
-
-
 async def worker(
         context: SimulationContext,
         data: WorkerData
@@ -160,29 +134,6 @@ async def worker(
                     context.pending_simulation.task_done()
                 except ValueError:
                     pass
-    elif data.worker_type == "popen":
-        async with ProcessManager(config.interpreter_path, config.worker_path) as proc:
-            while True:
-                # Fetches a new job and start working on it.
-                # If the termination signal is received, stops working.
-                sim: warm.WarmSimData
-                sim_tuple = await context.pending_simulation.get()
-                _, _, _, sim = sim_tuple
-
-                if sim is None:
-                    return
-
-                try:
-                    response, error = await proc.communicate(sim.to_json().encode())
-
-                    if error:
-                        raise error
-
-                    res = warm.WarmSimData.from_json(response.decode())
-                    await context.pending_storage.put(res)
-                    context.pending_simulation.task_done()
-                except ValueError as error:
-                    logger.error(error)
     else:
         raise ValueError(f"Unknown worker type {data.worker_type}")
 
@@ -218,7 +169,7 @@ async def simulation_manager(
         # First query the master data.
         await cursor.execute(f"""
             SELECT simId, solution, completedTrials, maxTime FROM SimInfo 
-            WHERE simId = '{target.simId}'
+            WHERE simId = '{target.model.id}'
         """)
         info_row = await cursor.fetchone()
         # TODO: use info row to cross-check data integrity.
@@ -226,7 +177,7 @@ async def simulation_manager(
         # Then query detailed sim data.
         await cursor.execute(f"""
             SELECT trialId, max(endTime) AS endTime, counts FROM SimData
-            WHERE simId = '{target.simId}'
+            WHERE simId = '{target.model.id}'
             GROUP BY trialId
             ORDER BY trialId
         """)
@@ -241,7 +192,7 @@ async def simulation_manager(
         model=target.model,
         root="0.0",
         counts=json.loads(data_row["counts"]),
-        targetTime=data_row["endTime"] + config.TIME_STEP,
+        targetTime=data_row["endTime"] + config.time_step,
         t=data_row["endTime"],
         trialId=data_row["trialId"]
     ) for data_row in data_rows]
@@ -249,7 +200,7 @@ async def simulation_manager(
         model=target.model,
         root="0.0",
         counts=None,
-        targetTime=config.TIME_STEP,
+        targetTime=config.time_step,
         t=0,
         trialId=i
     ) for i in range(len(data_rows), target.n)]
@@ -264,13 +215,13 @@ async def simulation_manager(
     async with context.db.cursor() as cursor:
         await cursor.execute(f"""
             INSERT OR IGNORE INTO SimInfo (simId, model, solution)
-            VALUES ('{target.simId}', '{target.model.to_json()}', '{solution}')
+            VALUES ('{target.model.id}', '{target.model.to_json()}', '{solution}')
         """)
         await cursor.execute(f"""
             UPDATE SimInfo
             SET model = '{target.model.to_json()}',
                 solution = '{solution}'
-            WHERE simId = '{target.simId}'
+            WHERE simId = '{target.model.id}'
         """)
         await context.db.commit()
 
@@ -278,7 +229,7 @@ async def simulation_manager(
     completed_count = 0
     for sim in latest_sims:
         if sim.t < target.t:
-            await context.pending_simulation.put((target.simId, sim.t, sim.trialId, sim))
+            await context.pending_simulation.put((target.model.id, sim.t, sim.trialId, sim))
         else:
             completed_count += 1
 
@@ -297,11 +248,11 @@ async def simulation_manager(
 
             # Adds the next simulation item into the queue.
             if res.t < target.t:
-                await context.pending_simulation.put((target.simId, res.t, res.trialId, warm.WarmSimData(
+                await context.pending_simulation.put((target.model.id, res.t, res.trialId, warm.WarmSimData(
                     model=res.model,
                     root=res.root,
                     counts=res.counts,
-                    targetTime=res.t + config.TIME_STEP,
+                    targetTime=res.t + config.time_step,
                     t=res.t,
                     trialId=res.trialId
                 )))
@@ -319,7 +270,7 @@ async def simulation_manager(
                 UPDATE SimInfo
                 SET completedTrials = {target.n},
                     maxTime = {target.t}
-                WHERE simId = '{target.simId}'
+                WHERE simId = '{target.model.id}'
             """)
             await context.db.commit()
     except (InterruptedError, KeyboardInterrupt):
@@ -338,7 +289,7 @@ async def main(args: Optional[list[str]] = None):
     pending_simulation = asyncio.PriorityQueue()  # Items waiting to be simulated
     pending_storage = asyncio.Queue()             # Items pending storage
 
-    async with DatabaseManager(config.DB_LOCATION, is_readonly=False, use_dict_factory=True) as db:
+    async with DatabaseManager(config.db_location, is_readonly=False, use_dict_factory=True) as db:
         # Ensures the presence of data tables required.
         await create_siminfo_if_missing(db)
         await create_simdata_if_missing(db)
@@ -367,87 +318,13 @@ async def main(args: Optional[list[str]] = None):
             # When all the managers exit, all trials must have been done.
             # Time to fire all the workers so they stop.
             for target in targets:
-                await context.pending_simulation.put((target.simId, math.inf, None, None))
+                await context.pending_simulation.put((target.model.id, math.inf, None, None))
 
             for task in worker_tasks:
                 await task
         except (KeyboardInterrupt, InterruptedError) as error:
             for task in chain(worker_tasks, manager_tasks):
                 task.cancel()
-
-
-def hpc_main():
-    # Set up the queues and global state stores.
-    pending_simulation = JoinableQueue()
-    pending_storage = JoinableQueue()
-
-    # The context.
-    context = HpcContext(
-        pending_simulation=pending_simulation,
-        pending_storage=pending_storage
-    )
-
-    # Start the worker processes.
-    for i in range(config.n_proc):
-        Process(target=hpc_worker, args=(context,)).start()
-
-    # Compute the amount of tasks to be completed.
-    task_count = sum(target.n for target in config.targets)
-    completed_count = 0
-
-    # Build an auxiliary target lookup.
-    target_dict: dict[str, Target] = {target.simId: target for target in config.targets}
-
-    # Places a few initial tasks into the queue.
-    for target in config.targets:
-        for i in range(target.n):
-            context.pending_simulation.put(warm.WarmSimData(
-                model=target.model,
-                root="0.0",
-                counts=None,
-                targetTime=config.TIME_STEP,
-                t=0,
-                trialId=i
-            ))
-
-    # Observe the queue and add things in when necessary, until everything is
-    # done.
-    with DataManager(config.buffer_limit, handlers=[CSVHandler(config.CSV_PATH)]) as dm:
-        while completed_count < task_count:
-            res = context.pending_storage.get(timeout=config.time_out)
-            dm.write({
-                "trialId": res.trialId,
-                "endTime": res.t,
-                "simId": res.model.id,
-                "root": res.root,
-                "counts": json.dumps(res.counts)
-            })
-
-            if res.t < target_dict[res.model.id].t:
-                context.pending_simulation.put(warm.WarmSimData(
-                    model=res.model,
-                    root=res.root,
-                    counts=res.counts,
-                    targetTime=res.t + config.TIME_STEP,
-                    t=res.t,
-                    trialId=res.trialId
-                ))
-            else:
-                completed_count += 1
-                if config.verbose:
-                    print(f" - Simulation {res.trialId} trial {res.trialId} is completed")
-                if config.use_progress_bar:
-                    pass
-                    # if context.pbar_completed is not None:
-                    #     context.pbar_completed.update(1)
-
-            context.pending_storage.task_done()
-
-    # Sends the stop signal to the workers.
-    print(f" - Stopping all process...")
-    for _ in range(config.n_proc):
-        context.pending_simulation.put(None)
-
 
 # TODO: Ultra-high priority. Centralise all workflows!
 # TODO: High priority. More robust handling of database entries.
@@ -456,9 +333,5 @@ def hpc_main():
 
 
 if __name__ == '__main__':
-    if config.use_hpc:
-        logger.info("HPC mode is on")
-        hpc_main()
-    else:
-        asyncio.run(main(), debug=True)
-        # asyncio.run(main())
+    asyncio.run(main(), debug=True)
+    # asyncio.run(main())

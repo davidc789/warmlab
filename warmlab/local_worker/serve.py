@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 from subprocess import Popen
 from typing import Optional
 
-from app import app
+from .app import app
 
 
 def serve_multiprocess(base_url: str, n_process: int = 4, ports: list[int] = None):

@@ -1,2 +1,6 @@
--r ./warmlab/warm/requirements.txt
--r ./warmlab/local_worker/requirements.txt
+igraph
+numpy
+scipy
+cvxpy
+aiosqlite
+pandas

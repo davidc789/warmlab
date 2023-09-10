@@ -1,6 +1,5 @@
 import abc
 import asyncio.subprocess
-import io
 import logging
 import sqlite3
 import sys
@@ -8,13 +7,10 @@ import traceback
 import warnings
 from os import PathLike
 from pathlib import Path
-from types import TracebackType
-from typing import Any, Generic, TypeVar, IO, TextIO, Type, Iterator, AnyStr, Iterable, Callable, Optional
+from typing import Any, Generic, TypeVar, TextIO, Callable, Optional
 
 import aiosqlite
 import pandas as pd
-
-import warm
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +57,7 @@ class ContextManager(Generic[T], metaclass=abc.ABCMeta):
         """
         pass
 
-    def open(self) -> T:
+    def open(self):
         """ Opens the connection.
 
         The context management syntax is recommended:
@@ -71,7 +67,6 @@ class ContextManager(Generic[T], metaclass=abc.ABCMeta):
             raise ConnectionError("The connection has already opened.")
 
         self._is_open = True
-        return self.connection
 
     def close(self):
         """ Closes the connection.
