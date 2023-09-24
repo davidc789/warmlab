@@ -33,7 +33,7 @@ fi
 cd /data/gpfs/projects/punim2076/warmlab/
 
 module purge
-module load GCCcore/11.3.0 Python/3.10.4
+module load GCCcore/11.3.0 Python/3.10.4 SQLite/3.42.0
 source ./envs/warmlab/bin/activate
 
 # Actual jobs

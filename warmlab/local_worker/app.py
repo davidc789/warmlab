@@ -12,7 +12,7 @@ def simulate_function():
     """ Runs simulation before returning the results back. """
     try:
         sim = warm.WarmSimData.from_dict(request.json)
-        res = warm.simulate(sim)
+        res = warm.simulate(sim, None)
         return res.to_dict(), 200
     except ValueError as error:
         return {

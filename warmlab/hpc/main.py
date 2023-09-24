@@ -2,22 +2,27 @@
 
 import dataclasses
 import json
+import multiprocessing
+import time
 
 from argparse import ArgumentParser
 from multiprocessing import Process, JoinableQueue
+
 from typing import Optional
 
 from tqdm import tqdm
 
 from .. import config
 from .. import warm
-from ..ContextManagers import DataManager, CSVHandler
+from ..ContextManagers import DataManager, DBHandler, DatabaseManager
 
 
 @dataclasses.dataclass()
 class HpcContext(object):
-    pending_simulation: JoinableQueue#[warm.WarmSimData]
-    pending_storage: JoinableQueue#[warm.WarmSimData]
+    target_dict: dict[str, config.Target]
+    pending_simulation: JoinableQueue#[warm.SimData]
+    db_location: str
+    time_step: int
     pbar_completed: Optional[tqdm] = None
     pbar_full: Optional[tqdm] = None
 
@@ -30,85 +35,147 @@ def worker(context: HpcContext):
 
     :param context: The simulation context.
     """
-    for sim in iter(context.pending_simulation.get, None):
-        res = warm.simulate(sim)
-        context.pending_storage.put(res)
-        context.pending_simulation.task_done()
+    with DataManager(lim=1000, handlers=[DBHandler("SimData", context.db_location)]) as dm:
+        for sim in iter(context.pending_simulation.get, None):
+            # Construct the simulation information object.
+            sim_info = warm.SimInfo(
+                simId=sim.simId,
+                model=context.target_dict[sim.simId].model,
+            )
+            sim.calc_omega_x(sim_info.model)
+
+            # Repeatedly simulate until the target is reached.
+            while sim.endTime < context.target_dict[sim.simId].endTime:
+                sim = warm.simulate(sim_info, sim)
+                dm.write({
+                    "root": sim.root,
+                    "endTime": sim.endTime,
+                    "trialId": sim.trialId,
+                    "counts": json.dumps(sim.counts),
+                    "simId": sim.simId,
+                })
+                sim.endTime += context.time_step
+
+            # Inform the queue the job is done.
+            context.pending_simulation.task_done()
+
+
+def prepare_simulation_worker(params: tuple[HpcContext, config.Target]):
+    """ Prepares the simulation.
+
+    :param params: The parameters required for the worker.
+    """
+    # If solving is desired, solve it quickly.
+    context, target = params
+    solution = None
+    completed_count = 0
+    if config.config.use_solver:
+        solution = warm.solve(model=target.model).to_json()
+        print(" - Solver completed successfully")
+
+    # Ensure the database know about this simulation and have the solution available.
+    with DatabaseManager(config.config.db_path, is_readonly=False, use_dict_factory=True) as db:
+        cursor = db.cursor()
+        cursor.execute(f"""
+            INSERT OR IGNORE INTO SimInfo (simId, model, solution)
+            VALUES (?, ?, ?)
+        """, [target.model.id, target.model.to_json(), solution])
+        cursor.execute(f"""
+            UPDATE SimInfo
+            SET model = ?,
+                solution = ?
+            WHERE simId = ?
+        """, [target.model.to_json(), solution, target.model.id])
+        db.commit()
+
+        # Determine the current simulation progress.
+        cursor.execute(f"""
+            SELECT trialId, max(endTime) AS endTime, counts FROM SimData
+            WHERE simId = ?
+            GROUP BY trialId
+            ORDER BY trialId
+        """, [target.model.id])
+        data_rows = cursor.fetchall()
+
+    # Start simulating from the existing ones.
+    for data_row in data_rows:
+        if data_row["endTime"] < target.endTime:
+            context.pending_simulation.put(warm.SimData(
+                root="0.0",
+                counts=json.loads(data_row["counts"]),
+                endTime=data_row["endTime"] + config.config.time_step,
+                t=data_row["endTime"],
+                trialId=data_row["trialId"],
+                simId=target.model.id,
+            ))
+        else:
+            completed_count += 1
+
+    # Then place the new jobs.
+    for i in range(len(data_rows), target.n):
+        context.pending_simulation.put(warm.SimData(
+            root="0.0",
+            counts=None,
+            endTime=config.config.time_step,
+            t=0,
+            trialId=i,
+            simId=target.model.id,
+        ))
+
+    return completed_count
 
 
 def manager():
-    # Set up the queues and the timer.
+    # Set up the queues and build an auxiliary target lookup, and then build the global context.
+    nproc = config.config.n_proc
     pending_simulation = JoinableQueue()
-    pending_storage = JoinableQueue()
-
-    # The global context.
+    target_dict: dict[str, config.config.Target] = {
+        target.model.id: target for target in config.config.targets
+    }
     context = HpcContext(
+        target_dict=target_dict,
         pending_simulation=pending_simulation,
-        pending_storage=pending_storage
+        db_location=config.config.db_path,
+        time_step=config.config.time_step,
     )
 
+    # Compute the amount of tasks to be completed.
+    completed_count = 0
+    task_count = sum(target.n for target in config.config.targets)
+
+    # Prepare the simulations in a paralleled manner.
+    with multiprocessing.Pool(min(len(config.config.targets), nproc)) as pool:
+        for count in pool.imap_unordered(
+                prepare_simulation_worker, [(context, target) for target in config.config.targets]):
+            completed_count += count
+
     # Start the worker processes.
-    for i in range(config.config.n_proc):
+    for i in range(nproc):
         Process(target=worker, args=(context,)).start()
 
-    # Compute the amount of tasks to be completed.
-    task_count = sum(target.n for target in config.config.targets)
-    completed_count = 0
+    # Monitor the simulation loosely.
+    start_time = time.time()
+    while completed_count < task_count:
+        # Print statistics to the stdout.
+        elapsed_time = time.time() - start_time
+        new_completed_count = task_count - context.pending_simulation.qsize()
+        print(f"{new_completed_count} out of {task_count} trials done ({elapsed_time})", flush=True)
 
-    # Build an auxiliary target lookup.
-    target_dict: dict[str, config.config.Target] = {target.model.id: target for target in config.config.targets}
+        # Update the progress bar, if there is one.
+        if config.config.use_progress_bar:
+            if context.pbar_completed is not None:
+                context.pbar_completed.update(new_completed_count - completed_count)
 
-    # Places a few initial tasks into the queue.
-    for target in config.config.targets:
-        for i in range(target.n):
-            context.pending_simulation.put(warm.WarmSimData(
-                model=target.model,
-                root="0.0",
-                counts=None,
-                targetTime=config.config.time_step,
-                t=0,
-                trialId=i
-            ))
-
-    # Observe the queue and add things in when necessary, until everything is
-    # done.
-    with DataManager(config.config.buffer_limit, handlers=[CSVHandler(config.config.csv_path)]) as dm:
-        while completed_count < task_count:
-            res = context.pending_storage.get(timeout=config.config.time_out)
-            dm.write({
-                "trialId": res.trialId,
-                "endTime": res.t,
-                "simId": res.model.id,
-                "root": res.root,
-                "counts": json.dumps(res.counts)
-            })
-
-            if res.t < target_dict[res.model.id].t:
-                if config.config.verbose:
-                    print(f" - Simulation {res.model.id} trial {res.trialId} time {res.t} is completed", flush=True)
-                context.pending_simulation.put(warm.WarmSimData(
-                    model=res.model,
-                    root=res.root,
-                    counts=res.counts,
-                    targetTime=res.t + config.config.time_step,
-                    t=res.t,
-                    trialId=res.trialId
-                ))
-            else:
-                completed_count += 1
-                if config.config.verbose:
-                    print(f" - Simulation {res.model.id} trial {res.trialId} is completed", flush=True)
-                if config.config.use_progress_bar:
-                    pass
-                    # if context.pbar_completed is not None:
-                    #     context.pbar_completed.update(1)
-
-            context.pending_storage.task_done()
+        completed_count = new_completed_count
+        time.sleep(30)
 
     # Sends the stop signal to the workers.
-    print(f" - Stopping all process...")
-    for _ in range(config.config.n_proc):
+    print(f" - Stopping all process...", flush=True)
+    for _ in range(nproc):
         context.pending_simulation.put(None)
+
+    # Wait for the queue to join before quitting.
+    context.pending_simulation.join()
 
 
 def main(argv: Optional[list[str]] = None):

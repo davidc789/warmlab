@@ -216,6 +216,81 @@ class WarmSolution(JsonSerialisable):
 
 
 @dataclass(slots=True)
+class SimInfo(JsonSerialisable):
+    model: WarmModel  # The actual model.
+    solution: Optional[WarmSolution] = None  # Solution data.
+    simId: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, dct: dict):
+        solution = None
+        if dct["solution"] is not None:
+            solution = WarmSolution.from_dict(dct["solution"])
+
+        return cls(
+            simId=dct["simId"],
+            model=WarmModel.from_dict(dct["model"]),
+            solution=solution
+        )
+
+    def to_dict(self):
+        solution_dict = None
+        if self.solution is not None:
+            solution_dict = self.solution.to_dict()
+
+        return {
+            "simId": self.simId,
+            "model": self.model.to_dict(),
+            "solution": solution_dict
+        }
+
+
+def calc_x():
+    pass
+
+
+def calc_omega():
+    pass
+
+
+@dataclass(slots=True)
+class SimData(JsonSerialisable):
+    root: str  # The starting point of the simulation.
+    endTime: int  # Target time.
+    t: int  # Current time.
+    simId: Optional[str] = None  # The simulation ID, used for tagging.
+    trialId: Optional[int] = None  # The trialId. Used only for tagging.
+    counts: Optional[list[int]] = None  # Current counts.
+    x: Optional[list[float]] = None  # Current proportions.
+    omegas: Optional[list[int]] = None  # Current node sums.
+
+    def calc_omega_x(self, model: WarmModel):
+        self.x = [x / (self.t + model.elem_count) for x in self.counts]
+        self.omegas = [sum(self.counts[i] for i in g) for g in model.bins]
+
+    @classmethod
+    def from_dict(cls, dct: dict):
+        return cls(
+            root=dct["root"],
+            endTime=dct["endTime"],
+            t=dct["t"],
+            trialId=dct["trialId"],
+            counts=dct["counts"],
+            simId=dct["simId"],
+        )
+
+    def to_dict(self):
+        return {
+            "root": self.root,
+            "endTime": self.endTime,
+            "t": self.t,
+            "trialId": self.trialId,
+            "counts": self.counts,
+            "simId": self.simId,
+        }
+
+
+@dataclass(slots=True)
 class WarmSimData(JsonSerialisable):
     model: WarmModel        # The actual model.
     root: str               # The starting point of the simulation.
@@ -265,29 +340,32 @@ class WarmSimData(JsonSerialisable):
         }
 
 
-def simulate(sim: WarmSimData):
+def simulate(simInfo: SimInfo, simData: SimData):
     """ Conducts simulation as directed.
 
-    :param sim: The simulation data object.
+    :param simInfo: The simulation data object.
     """
+    if simData.counts is None:
+        simData.counts = [1 for _ in range(simInfo.model.elem_count)]
+
     # The reversed map tells us which bins need to reevaluate when e is updated.
-    rev_bin_map = sim.model.rev_bin_map
-    vertices = np.array(range(sim.model.bins_count))
-    vs: np.ndarray = np.random.choice(vertices, size=sim.targetTime - sim.t, p=sim.model.probs)
-    qs = np.random.rand(sim.targetTime - sim.t)
+    rev_bin_map = simInfo.model.rev_bin_map
+    vertices = np.array(range(simInfo.model.bins_count))
+    vs: np.ndarray = np.random.choice(vertices, size=simData.endTime - simData.t, p=simInfo.model.probs)
+    qs = np.random.rand(simData.endTime - simData.t)
 
     for v, q in zip(vs, qs):
-        groups, omega = sim.model.bins[v], sim.omegas[v]
-        weights = [sim.counts[i] / omega for i in groups]
+        groups, omega = simInfo.model.bins[v], simData.omegas[v]
+        weights = [simData.counts[i] / omega for i in groups]
 
         # Selects a random edge and updates omegas based on
         e = fast_choose(q, groups, p=weights)
-        sim.counts[e] += 1
+        simData.counts[e] += 1
         for i in rev_bin_map[e]:
-            sim.omegas[i] += 1
+            simData.omegas[i] += 1
 
-    sim.t = sim.targetTime
-    return sim
+    simData.t = simData.endTime
+    return simData
 
 
 def solve(model: WarmModel):
@@ -410,9 +488,6 @@ if __name__ == '__main__':
     m = 3
     graph = ring_2d_graph(m)
     model = WarmModel(is_graph=True, graph=graph)
-
-    sim = simulate(WarmSimData(model=model, root="0.0", t=0,
-                               targetTime=1_000_000))
+    sim = simulate(SimInfo(model=model), SimData(root="0.0", t=0, endTime=1_000_000))
     sim.solution = solve(model)
-    res = WarmSimData.from_json(sim.to_json())
-    print(res.to_json())
+    print(sim.to_json())

@@ -17,14 +17,14 @@ class WorkerData(warm.JsonSerialisable):
 @dataclass(slots=True)
 class Target(warm.JsonSerialisable):
     """ Specifying a simulation target. """
-    t: int                             # Target end time.
+    endTime: int                             # Target end time.
     n: int                             # Target number of simulations.
     model: warm.WarmModel              # The underlying WARM model.
     # progress: Optional[list[warm.WarmSimData]] = None  # Current simulation progress, if applicable.
 
     def to_dict(self):
         return {
-            "t": self.t,
+            "t": self.endTime,
             "n": self.n,
             "model": self.model.to_dict(),
             # "progress": self.progress
@@ -33,7 +33,7 @@ class Target(warm.JsonSerialisable):
     @classmethod
     def from_dict(cls, dct: dict):
         return cls(
-            t=dct["t"],
+            endTime=dct["t"],
             n=dct["n"],
             model=warm.WarmModel.from_dict(dct["model"]),
             # "progress": [warm.WarmSimData.from_dict(x) for x in dct["progress"]]
@@ -57,7 +57,7 @@ class Config(warm.JsonSerialisable):
     verbose: bool = True
 
     # Location of the database.
-    db_location: str = "./data.sqlite"
+    db_path: str = "./data.sqlite"
 
     # Directory location for storing csv output.
     csv_path: str = "./data/"
@@ -74,7 +74,7 @@ class Config(warm.JsonSerialisable):
     # The list of simulation targets.
     targets: list[Target] = field(default_factory=lambda: [
         Target(
-            t=10_000_000,
+            endTime=10_000_000,
             n=1,
             model=warm.WarmModel(
                 is_graph=True,

@@ -3,15 +3,15 @@
     "use_solver": true,
     "use_hpc": true,
     "verbose": true,
-    "db_location": "./data.sqlite",
-    "csv_path": "./data/",
+    "db_path": "./data.sqlite",
+    "csv_path": "data\\job1",
     "time_step": 1000000,
     "buffer_limit": 100000,
     "n_proc": 2,
     "targets": [
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_3",
                 "probs": [
@@ -81,7 +81,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_4",
                 "probs": [
@@ -170,7 +170,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_5",
                 "probs": [
@@ -278,7 +278,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_6",
                 "probs": [
@@ -405,7 +405,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_7",
                 "probs": [
@@ -551,7 +551,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_8",
                 "probs": [
@@ -716,7 +716,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_9",
                 "probs": [
@@ -900,7 +900,7 @@
         },
         {
             "t": 1000000000,
-            "n": 100,
+            "n": 600,
             "model": {
                 "id": "ring_2d_10",
                 "probs": [

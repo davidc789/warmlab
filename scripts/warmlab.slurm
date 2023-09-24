@@ -7,7 +7,7 @@
 #SBATCH --job-name="Warm Simulation Test"
 #SBATCH --account="punim2076"
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=48
 #SBATCH --mem=10240
 #SBATCH --time=1-00:00:00
 
@@ -30,7 +30,7 @@ if [ "x$SLURM_JOB_ID" == "x" ]; then
 fi
 
 # Run the job from this directory:
-cd /data/gpfs/projects/punim2076/warmlab/
+cd /data/gpfs/projects/punim2076/warmlab
 
 module purge
 module load GCCcore/11.3.0 Python/3.10.4
@@ -47,4 +47,4 @@ export MKL_NUM_THREADS=${NUMPY_THREADS}
 export VECLIB_MAXIMUM_THREADS=${NUMPY_THREADS}
 export NUMEXPR_NUM_THREADS=${NUMPY_THREADS}
 
-hpcsim --cores ${SLURM_CPUS_PER_TASK} --config ./data/jobs/job1.json
+hpcsim --cores ${SLURM_CPUS_PER_TASK} --config ./data/jobs/job2.json

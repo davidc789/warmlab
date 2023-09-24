@@ -3,7 +3,8 @@
 import os
 from setuptools import setup, find_packages
 
-version = "1.0.6"
+# Version.Subversion.BuildNumber
+version = "1.1.1"
 requirement_path = "warmlab/local_worker/requirements.txt"
 
 install_requires = []
@@ -27,6 +28,7 @@ setup(
     entry_points={
         "console_scripts": [
             "hpcsim = warmlab.hpc.main:main [hpc]",
+            "warmlab = warmlab.manager.main:main [manager]"
         ],
     }
 )

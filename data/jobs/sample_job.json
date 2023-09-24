@@ -3,7 +3,7 @@
     "use_solver": true,
     "use_hpc": true,
     "verbose": true,
-    "db_location": "./data.sqlite",
+    "db_path": "./data.sqlite",
     "csv_path": "./data/",
     "time_step": 1000000,
     "buffer_limit": 100000,

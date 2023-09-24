@@ -13,7 +13,7 @@ def main():
     logger.info(" ! Worker ready")
     try:
         sim = warm.WarmSimData.from_json(sys.stdin.buffer.read().decode())
-        res = warm.simulate(sim)
+        res = warm.simulate(sim, None)
         sys.stdout.buffer.write(res.to_json().encode())
     except InterruptedError:
         return 1

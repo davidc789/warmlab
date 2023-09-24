@@ -85,9 +85,6 @@ class ContextManager(Generic[T], metaclass=abc.ABCMeta):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-        if exc_val is not None:
-            logger.error(f"Upon {self.name} exit: {exc_val}\n{traceback.format_exc()}")
-
 
 class AsyncContextManager(Generic[T], metaclass=abc.ABCMeta):
     """ A generic asynchronous context manager. """
@@ -330,11 +327,17 @@ class ProcessManager(AsyncContextManager[asyncio.subprocess.Process]):
                 self._async_proc.terminate()
 
 
-class WriteHandler(metaclass=abc.ABCMeta):
+class WriteHandler(object, metaclass=abc.ABCMeta):
     """ Base handler that supports writing. """
-    @abc.abstractmethod
-    def write(self, df: Any):
+    def write(self, df: Any, **kwargs):
         """ Writes the data.
+
+        :param df: pandas dataframe.
+        """
+        pass
+
+    async def async_write(self, df: Any):
+        """ Writes the data asynchronously.
 
         :param df: pandas dataframe.
         """
@@ -347,18 +350,46 @@ class WriteHandler(metaclass=abc.ABCMeta):
         """
         pass
 
+    def close(self):
+        """ Close the handle properly. """
+        pass
+
+
+class NullHandler(WriteHandler):
+    """ Do absolutely nothing, proudly. Useful for testing and debug. """
+    def __init__(self):
+        pass
+
 
 class DBHandler(WriteHandler):
-    _db_path: str
+    _db_manager: DatabaseManager
     _table_name: str
+    _db: Optional[sqlite3.Connection] = None
+    _kwargs: dict[str, any]
 
-    def __init__(self, db_path: str, table_name: str):
-        self._db_path = db_path
+    def __init__(self, table_name: str, db_path: Optional[str] = None,
+                 db_manager: Optional[DatabaseManager] = None, **kwargs):
+        if db_path is None and db_manager is None:
+            raise ValueError("Need to specify the path to database or supply a database manager.")
+
+        if db_manager is None:
+            db_manager = DatabaseManager(db_path, is_readonly=False)
+
+        self._db_manager = db_manager
         self._table_name = table_name
+        self._kwargs = kwargs
 
     def write(self, df: pd.DataFrame, **kwargs):
-        with DatabaseManager(self._db_path, is_readonly=False) as db:
-            df.to_sql("SimInfo", con=db, **kwargs)
+        if not self._db_manager.is_open:
+            self._db = self._db_manager.open()
+
+        df.to_sql(self._table_name, con=self._db,
+                  if_exists="append", index=False, **self._kwargs)
+
+    def close(self):
+        if self._db_manager.is_open:
+            self._db_manager.close()
+            self._db = None
 
 
 class CSVHandler(WriteHandler):
@@ -388,11 +419,11 @@ class BufferHandler(WriteHandler):
     def __init__(self, buf: str | Path | TextIO = sys.stdout):
         self._buf = buf
 
-    def write(self, df: pd.DataFrame):
+    def write(self, df: pd.DataFrame, **kwargs):
         df.to_string(buf=self._buf)
 
 
-class DataManager(ContextManager["DataManager"]):
+class DataManager(ContextManager["DataManager"], AsyncContextManager["DataManager"]):
     """ An asynchronous data manager. Not thread-safe or process-safe.
 
     It uses a list under the hood as a storage buffer. The buffer
@@ -403,19 +434,20 @@ class DataManager(ContextManager["DataManager"]):
     _is_open: bool
     _program: str
     _handlers: list[WriteHandler]
+    _async_handlers: list[WriteHandler]
+    _flush_on_close: bool
 
-    def __init__(self, lim: int = 100_000, handlers: list[WriteHandler] = (BufferHandler(),),
-                 flush_on_close: bool = True):
+    def __init__(self, lim: int = 1_000, handlers: list[WriteHandler] = (BufferHandler(),),
+                 async_handlers: list[WriteHandler] = (), flush_on_close: bool = True):
         """ Creates the data manager.
 
         :param lim: Maximum number of rows of data to store.
         """
         super().__init__()
         self._lim = lim
-        if len(handlers) == 0:
-            logger.warning("No handlers registered with the data manager."
-                           "All data will be lost when flushing!")
         self._handlers = handlers
+        self._async_handlers = async_handlers
+        self._flush_on_close = flush_on_close
 
     @property
     def data(self):
@@ -430,6 +462,10 @@ class DataManager(ContextManager["DataManager"]):
         return self
 
     @property
+    def async_connection(self) -> T:
+        return self
+
+    @property
     def lim(self):
         """ Returns the length limit before flush is automatically triggered.
 
@@ -437,7 +473,21 @@ class DataManager(ContextManager["DataManager"]):
         """
         return self._lim
 
-    def flush(self):
+    def add_handler(self, handler: WriteHandler):
+        """ Add a new handler to the data manager.
+
+        :param handler: The new handler to add.
+        """
+        self._handlers.append(handler)
+
+    def add_async_handler(self, handler: WriteHandler):
+        """ Add a new asynchronous handler.
+
+        :param handler: The asynchronous handler to add.
+        """
+        self._async_handlers.append(handler)
+
+    def flush(self, **kwargs):
         """ Flush the buffered data with the handlers. """
         # For implementation simplicity, create a dataframe to hold the data.
         # And then pipe it to the streams wanted.
@@ -445,11 +495,21 @@ class DataManager(ContextManager["DataManager"]):
             df = pd.DataFrame(self._data)
 
             for handler in self._handlers:
-                handler.write(df)
+                handler.write(df, **kwargs)
 
             self._data = []
 
-    def write(self, row: dict):
+    async def async_flush(self):
+        """ Flush the buffered data with the handlers, asynchronously. """
+        if len(self._data) > 0:
+            df = pd.DataFrame(self._data)
+
+            for handler in self._async_handlers:
+                await handler.async_write(df)
+
+            self._data = []
+
+    def write(self, row: dict, **kwargs):
         """ Write a new row of data to the buffer; flush if the buffer is full.
 
         :param row: Row to insert.
@@ -457,13 +517,39 @@ class DataManager(ContextManager["DataManager"]):
         self._data.append(row)
 
         if len(self._data) >= self._lim:
-            self.flush()
+            self.flush(**kwargs)
+
+    async def async_write(self, row: dict):
+        self._data.append(row)
+
+        if len(self._data) >= self._lim:
+            await self.async_flush()
+
+    async def async_open(self):
+        await super().async_open()
+        if len(self._handlers) == 0:
+            logger.warning("No asynchronous handlers registered with the data manager."
+                           "All data will be lost when flushing!")
+        return self.open()
+
+    async def async_close(self):
+        await super().async_close()
+        self.close()
 
     def open(self):
         super().open()
+        if len(self._handlers) == 0:
+            logger.warning("No synchronous handlers registered with the data manager."
+                           "All data will be lost when flushing!")
+
         self._data = []
         return self
 
     def close(self):
         super().close()
-        self.flush()
+        if self._flush_on_close:
+            self.flush()
+
+        # Close all the handlers.
+        for handler in self._handlers:
+            handler.close()

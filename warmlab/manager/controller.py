@@ -1,4 +1,5 @@
 """ The simulation master controller. """
+
 import json
 import logging
 import asyncio
@@ -228,7 +229,7 @@ async def simulation_manager(
     # Place a few initial simulations and keep track of completed simulations.
     completed_count = 0
     for sim in latest_sims:
-        if sim.t < target.t:
+        if sim.t < target.endTime:
             await context.pending_simulation.put((target.model.id, sim.t, sim.trialId, sim))
         else:
             completed_count += 1
@@ -247,7 +248,7 @@ async def simulation_manager(
             print(f" - Trial {res.trialId} time {res.t} is written to the database")
 
             # Adds the next simulation item into the queue.
-            if res.t < target.t:
+            if res.t < target.endTime:
                 await context.pending_simulation.put((target.model.id, res.t, res.trialId, warm.WarmSimData(
                     model=res.model,
                     root=res.root,
@@ -269,7 +270,7 @@ async def simulation_manager(
             await cursor.execute(f"""
                 UPDATE SimInfo
                 SET completedTrials = {target.n},
-                    maxTime = {target.t}
+                    maxTime = {target.endTime}
                 WHERE simId = '{target.model.id}'
             """)
             await context.db.commit()
@@ -289,7 +290,7 @@ async def main(args: Optional[list[str]] = None):
     pending_simulation = asyncio.PriorityQueue()  # Items waiting to be simulated
     pending_storage = asyncio.Queue()             # Items pending storage
 
-    async with DatabaseManager(config.db_location, is_readonly=False, use_dict_factory=True) as db:
+    async with DatabaseManager(config.db_path, is_readonly=False, use_dict_factory=True) as db:
         # Ensures the presence of data tables required.
         await create_siminfo_if_missing(db)
         await create_simdata_if_missing(db)

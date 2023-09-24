@@ -1,17 +1,16 @@
 import logging
+import sqlite3
 from typing import TypedDict, TypeVar, Optional, NamedTuple
 
-import pandas as pd
-
-import warm
-import sqlite3
-
-from dash import Dash, dcc, html, Input, Output, callback
 import dash_cytoscape as cyto
 import plotly.express as px
+import pandas as pd
 
-from ContextManagers import DatabaseManager
-from config import config
+from dash import Dash, dcc, html, Input, Output, callback
+
+from .. import warm
+from ..ContextManagers import DatabaseManager
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ height = 400
 
 
 T = TypeVar("T")
-SimMap= dict[tuple[str, int, int], warm.WarmSimData]
+SimMap = dict[tuple[str, int, int], warm.WarmSimData]
 GraphFamilies = ["ring_2d"]
 
 
@@ -54,7 +53,7 @@ class InfoTuple(NamedTuple):
     solution: warm.WarmSolution
 
 
-def escape_string(string: str, escape_symb = "\\", escape_chars: list[str] = ("%", "_")):
+def escape_string(string: str, escape_symb: str = "\\", escape_chars: list[str] = ("%", "_")):
     """ Escape the original string. """
     out_buf = []
 
@@ -99,7 +98,7 @@ def parse_model(model: warm.WarmModel) -> list[CytoElement]:
 def fetch_data(graph_family_selected: str) -> tuple[pd.DataFrame, dict[str, InfoTuple]]:
     if graph_family_selected in GraphFamilies:
         # Fetch data.
-        with DatabaseManager(config.db_location) as db:
+        with DatabaseManager(config.db_path) as db:
             logger.info("Data fetching commenced")
             id_pattern = escape_string(graph_family_selected) + "%"
             df = pd.read_sql(f"""
