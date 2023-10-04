@@ -4,7 +4,7 @@ import os
 from setuptools import setup, find_packages
 
 # Version.Subversion.BuildNumber
-version = "1.1.1"
+version = "1.1.4"
 requirement_path = "warmlab/local_worker/requirements.txt"
 
 install_requires = []

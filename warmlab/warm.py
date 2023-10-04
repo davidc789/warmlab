@@ -265,6 +265,9 @@ class SimData(JsonSerialisable):
     omegas: Optional[list[int]] = None  # Current node sums.
 
     def calc_omega_x(self, model: WarmModel):
+        if self.counts is None:
+            self.counts = [1 for _ in range(model.elem_count)]
+
         self.x = [x / (self.t + model.elem_count) for x in self.counts]
         self.omegas = [sum(self.counts[i] for i in g) for g in model.bins]
 
@@ -347,6 +350,8 @@ def simulate(simInfo: SimInfo, simData: SimData):
     """
     if simData.counts is None:
         simData.counts = [1 for _ in range(simInfo.model.elem_count)]
+    if simData.omegas is None:
+        simData.calc_omega_x(simInfo.model)
 
     # The reversed map tells us which bins need to reevaluate when e is updated.
     rev_bin_map = simInfo.model.rev_bin_map

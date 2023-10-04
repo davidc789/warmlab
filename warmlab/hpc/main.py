@@ -2,7 +2,6 @@
 
 import dataclasses
 import json
-import multiprocessing
 import time
 
 from argparse import ArgumentParser
@@ -36,25 +35,25 @@ def worker(context: HpcContext):
     :param context: The simulation context.
     """
     with DataManager(lim=1000, handlers=[DBHandler("SimData", context.db_location)]) as dm:
-        for sim in iter(context.pending_simulation.get, None):
+        for sim_data in iter(context.pending_simulation.get, None):
             # Construct the simulation information object.
             sim_info = warm.SimInfo(
-                simId=sim.simId,
-                model=context.target_dict[sim.simId].model,
+                simId=sim_data.simId,
+                model=context.target_dict[sim_data.simId].model,
             )
-            sim.calc_omega_x(sim_info.model)
+            sim_data.calc_omega_x(sim_info.model)
 
             # Repeatedly simulate until the target is reached.
-            while sim.endTime < context.target_dict[sim.simId].endTime:
-                sim = warm.simulate(sim_info, sim)
+            while sim_data.endTime < context.target_dict[sim_data.simId].endTime:
+                sim_data = warm.simulate(sim_info, sim_data)
                 dm.write({
-                    "root": sim.root,
-                    "endTime": sim.endTime,
-                    "trialId": sim.trialId,
-                    "counts": json.dumps(sim.counts),
-                    "simId": sim.simId,
+                    "root": sim_data.root,
+                    "endTime": sim_data.endTime,
+                    "trialId": sim_data.trialId,
+                    "counts": json.dumps(sim_data.counts),
+                    "simId": sim_data.simId,
                 })
-                sim.endTime += context.time_step
+                sim_data.endTime += context.time_step
 
             # Inform the queue the job is done.
             context.pending_simulation.task_done()
@@ -143,39 +142,44 @@ def manager():
     completed_count = 0
     task_count = sum(target.n for target in config.config.targets)
 
-    # Prepare the simulations in a paralleled manner.
-    with multiprocessing.Pool(min(len(config.config.targets), nproc)) as pool:
-        for count in pool.imap_unordered(
-                prepare_simulation_worker, [(context, target) for target in config.config.targets]):
-            completed_count += count
+    # Prepare the simulations in a paralleled manner. Not parallel yet.
+    for target in config.config.targets:
+        completed_count += prepare_simulation_worker((context, target))
 
-    # Start the worker processes.
-    for i in range(nproc):
-        Process(target=worker, args=(context,)).start()
+    processes: list[Process] = []
 
-    # Monitor the simulation loosely.
-    start_time = time.time()
-    while completed_count < task_count:
-        # Print statistics to the stdout.
-        elapsed_time = time.time() - start_time
-        new_completed_count = task_count - context.pending_simulation.qsize()
-        print(f"{new_completed_count} out of {task_count} trials done ({elapsed_time})", flush=True)
+    try:
+        # Start the worker processes.
+        for i in range(nproc):
+            process = Process(target=worker, args=(context,))
+            processes.append(process)
+            process.start()
 
-        # Update the progress bar, if there is one.
-        if config.config.use_progress_bar:
-            if context.pbar_completed is not None:
-                context.pbar_completed.update(new_completed_count - completed_count)
+        # Monitor the simulation loosely.
+        start_time = time.time()
+        while completed_count < task_count:
+            # Print statistics to the stdout.
+            elapsed_time = time.time() - start_time
+            new_completed_count = task_count - context.pending_simulation.qsize()
+            print(f"{new_completed_count} out of {task_count} trials done ({elapsed_time})", flush=True)
 
-        completed_count = new_completed_count
-        time.sleep(30)
+            # Update the progress bar, if there is one.
+            if config.config.use_progress_bar:
+                if context.pbar_completed is not None:
+                    context.pbar_completed.update(new_completed_count - completed_count)
 
-    # Sends the stop signal to the workers.
-    print(f" - Stopping all process...", flush=True)
-    for _ in range(nproc):
-        context.pending_simulation.put(None)
+            completed_count = new_completed_count
+            time.sleep(30)
 
-    # Wait for the queue to join before quitting.
-    context.pending_simulation.join()
+        # Sends the stop signal to the workers.
+        print(f" - Stopping all process...", flush=True)
+        for _ in range(nproc):
+            context.pending_simulation.put(None)
+    finally:
+        # Wait for the processes to join before quitting.
+        for p in processes:
+            p.join()
+            p.close()
 
 
 def main(argv: Optional[list[str]] = None):

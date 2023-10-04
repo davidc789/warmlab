@@ -1,5 +1,4 @@
 from argparse import ArgumentParser, Namespace
-from csv import DictReader
 from pathlib import Path
 from typing import Optional
 
@@ -14,8 +13,11 @@ DEFAULT_JOBS_DIR = "./data/jobs/"
 
 
 def write_jobs_handler(args: Namespace):
-    """ Write jobs. """
-    cfg = config.config.Config()
+    """ Write all the job configuration files.
+
+    :param args: Parsed command line arguments.
+    """
+    cfg = config.Config()
     jobs_dir = Path(DEFAULT_JOBS_DIR)
     data_dir = Path(DEFAULT_DATA_DIR)
 
@@ -46,7 +48,7 @@ def write_jobs_handler(args: Namespace):
     cfg.targets = [
         config.Target(
             endTime=1_000_000_000,
-            n=500,
+            n=200,
             model=warm.WarmModel(
                 is_graph=True,
                 graph=warm.ring_2d_graph(i),
@@ -97,13 +99,20 @@ def write_jobs_handler(args: Namespace):
 
 
 def import_handler(args: Namespace):
-    """ Imports external data into the database. """
+    """ Import external data into the database.
+
+    :param args: Parsed command line arguments.
+    """
     with DatabaseManager(db_path=config.config.db_path) as db:
-        pd.read_csv(Path(args.path) / "SimInfo.csv").to_sql("SimInfo", db, if_exists="append")
-        pd.read_csv(Path(args.path) / "SimData.csv").to_sql("SimData", db, if_exists="append")
+        pd.read_csv(Path(args.path) / "SimInfo.csv").to_sql("SimInfo", db, if_exists="append", index=False)
+        pd.read_csv(Path(args.path) / "SimData.csv").to_sql("SimData", db, if_exists="append", index=False)
 
 
 def export_handler(args: Namespace):
+    """ Export local data from the database.
+
+    :param args: Parsed command line arguments.
+    """
     with DatabaseManager(config.config.db_path) as db:
         pd.read_sql(f"""
             SELECT * FROM SimInfo
@@ -122,6 +131,10 @@ def export_handler(args: Namespace):
 
 
 def summarise_handler(args: Namespace):
+    """ Generate a data summary of the host.
+
+    :param args: Parsed command line arguments.
+    """
     with DatabaseManager(config.config.db_path) as db:
         pd.read_sql(f"""
             SELECT simId, trialId, max(endTime) AS endTime FROM SimData
@@ -130,11 +143,28 @@ def summarise_handler(args: Namespace):
         """, db).to_csv(Path(args.path) / "SimDataSummary.csv", index=False)
 
 
+def sim_handler(args: Namespace):
+    """ Conducts a warm simulation.
+
+    :param args: Parsed command line arguments.
+    """
+    from .. import hpc
+
+    if args.config is not None:
+        config.load_config(args.config, args.cores)
+
+    hpc.main.manager()
+
+
 def analyser_handler(args: Namespace):
-    pass
+    from ..analyser import analyser
 
 
 def main(argv: Optional[list[str]] = None):
+    """ The main program.
+
+    :param argv: Specify command line arguments for library users.
+    """
     # Add the parser.
     parser = ArgumentParser("warmlab")
     subparsers = parser.add_subparsers(required=True)
@@ -151,13 +181,26 @@ def main(argv: Optional[list[str]] = None):
     # Export (data) parser.
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("path")
-    export_parser.add_argument("--full", action="store_true")
+    export_parser.add_argument("--full", action="store_true",
+                               help="Whether to export everything")
     export_parser.set_defaults(func=export_handler)
 
-    # Generate a data summary.
+    # Data summary parser.
     summarise_parser = subparsers.add_parser("summarise")
     summarise_parser.add_argument("path")
     summarise_parser.set_defaults(func=summarise_handler)
+
+    # Simulation parser.
+    sim_parser = subparsers.add_parser("sim")
+    sim_parser.add_argument(
+        "--config", default=None, type=str, help="Path to config file")
+    sim_parser.add_argument(
+        "--cores", default=None, type=int, help="Number of cores to use. Overrides the config setting")
+    sim_parser.set_defaults(func=sim_handler)
+
+    # Analyser parser.
+    analyser_parser = subparsers.add_parser("analyse")
+    analyser_parser.set_defaults(func=analyser_handler)
 
     # Parse the arguments and invoke the relevant handler.
     args = parser.parse_args(argv)

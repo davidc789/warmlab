@@ -1,6 +1,7 @@
 import abc
 import asyncio.subprocess
 import logging
+import socket
 import sqlite3
 import sys
 import traceback
@@ -343,13 +344,6 @@ class WriteHandler(object, metaclass=abc.ABCMeta):
         """
         pass
 
-    def flush(self):
-        """ Flush all the outputs into the underlying stream.
-
-        By default, this feature is unused as write immediately triggers flush.
-        """
-        pass
-
     def close(self):
         """ Close the handle properly. """
         pass
@@ -359,6 +353,17 @@ class NullHandler(WriteHandler):
     """ Do absolutely nothing, proudly. Useful for testing and debug. """
     def __init__(self):
         pass
+
+
+class HttResponseHandler(WriteHandler):
+    def __init__(self):
+        pass
+
+    def write(self, df: Any, **kwargs):
+        pass
+
+    def close(self):
+        super().close()
 
 
 class DBHandler(WriteHandler):

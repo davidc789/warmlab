@@ -28,6 +28,7 @@ class SimulationContext(NamedTuple):
     pbar_completed: Optional[tqdm] = None
     pbar_full: Optional[tqdm] = None
 
+
 def simulation_order(sim: dict[str, any]):
     """ Specifies how simulations should be ordered.
 
@@ -105,6 +106,7 @@ async def insert_simulation(context: SimulationContext, sim: warm.WarmSimData,
             raise ValueError(f"Unknown failure action {on_failure}")
 
         await context.db.commit()
+
 
 async def worker(
         context: SimulationContext,
@@ -327,11 +329,11 @@ async def main(args: Optional[list[str]] = None):
             for task in chain(worker_tasks, manager_tasks):
                 task.cancel()
 
+
 # TODO: Ultra-high priority. Centralise all workflows!
 # TODO: High priority. More robust handling of database entries.
-# TODO: High priority. A crash-preventing caching system for restarting
+# TODO: High priority. A crash-preventing caching system for restarting.
 # TODO: Low priority. Better progress bar.
-
 
 if __name__ == '__main__':
     asyncio.run(main(), debug=True)
