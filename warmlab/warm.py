@@ -12,6 +12,7 @@ import json
 
 import igraph
 import numpy as np
+from matplotlib import pyplot as plt
 from scipy.integrate import solve_ivp
 import igraph as ig
 import cvxpy as cp
@@ -402,6 +403,19 @@ def solve(model: WarmModel):
         duals=(constraints[0].dual_value, constraints[1].dual_value.tolist(), constraints[2].dual_value.tolist()),
         x_opt=values
     )
+
+
+def visualise(model: WarmModel, x: np.array, width_range: tuple[int, int] = (1, 20)):
+    """ Visualise the model graph.
+
+    :param model: The WARM model to visualise.
+    :param x: The edge proportions.
+    """
+    if not model.is_graph:
+        raise ValueError("The model needs to be a graph form to be visualised.")
+
+    fig, ax = plt.subplots()
+    ig.plot(model.graph, target=ax, edge_width=width_range[0] + x * (width_range[1] - width_range[0]))
 
 
 # TODO
