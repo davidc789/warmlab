@@ -1,23 +1,41 @@
-# 
+# Warmlab
 
-## Deployment Guide
+## What is a WARM?
 
-0. Copy all the files over to a local directory.
-1. Install Python 3.11 and make sure it is on `PATH`.
-2. In console, change to the project folder and run
-```shell
+A WA-reinfrocement model (WARMs) is an interesting stochastic process inspired by the development of human brain \[1\].
+Consider a graph $G$ with vertices $V$ and edges $E$.
+Initially we start with some counts $N^{(0)}_e$ (typically $N^{(0)}_e=1$) for all the edges $e\in E$.
+At each time step $t$, we select a vertex $v$ and reinforce an edge $e$ incident to $v$ randomly using their counts 
+as weights, i.e., the probability of selecting $e$ is
+$$
+  \frac{N^{(t)}_e}{\sum_{f\text{ incident to }v} N^{(t)}_f} \,.
+$$
+After the reinforcement, $N^{(t+1)}_e = N^{(t)}_e + 1$ for the chosen $e$ and the counts for other edges remain the same.
+Interested readers can have a look at \[1\] for more details on the model and its interesting properties.
+
+This package implements useful utilities for studying WA-reinforcement models, written as a part of my MSc thesis project in mathematics and statistics.
+
+
+## Usage
+
+### Building from Source and Installation
+
+Clone the project and navigate to the root directory.
+To install the package, build the project using
+```python
+python -m build .
+```
+It should be fairly quick and this generates a `dist` folder.
+Locate `warm-vx.x.x.tar.gz` under that folder where the version is the current version and run
+```python
 pip install -r requirements.txt
+pip install dist/warm-vx.x.x.tar.gz
 ```
-If prompted, upgrade `pip` just to be safe:
-```shell
-python -m pip install --upgrade pip
-```
-3. Install all dependencies with 
-```shell
-pip install -r requirements.txt
-```
-4. Check your LAN IP address. Start the server with
-```shell
-waitress-serve [LAN IP] app:app
-```
-5. You are good to go!
+to complete the installtion, after which you can `import` it as any other Python package.
+
+### High-performance Computing Deployment
+
+Doc to be written.
+
+[1] Remco van der Hofstad et al. “Strongly reinforced Pólya urns with graph-based
+competition”. In: The Annals of Applied Probability 26.4 (2016), pp. 2494–2539.
