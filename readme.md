@@ -32,6 +32,8 @@ pip install dist/warm-vx.x.x.tar.gz
 ```
 to complete the installtion, after which you can `import` it as any other Python package.
 
+A few examples are under `notebooks`, which should run when the above steps are compeleted.
+
 ### High-performance Computing Deployment
 
 Doc to be written.
